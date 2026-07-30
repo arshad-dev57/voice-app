@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'core/services/notification_service.dart';
+import 'core/services/alarm_service.dart';
 import 'firebase_options.dart';
 
 import 'features/settings/presentation/controllers/settings_controller.dart';
@@ -23,6 +24,9 @@ Future<void> main() async {
 
   // Initialize local notifications (timezones etc.) before the app starts.
   await NotificationService.instance.initialize();
+
+  // Initialize alarm service for background alarm support
+  await AlarmService.initialize();
 
   runApp(const ProviderScope(child: SmartVoiceAssistantApp()));
 }

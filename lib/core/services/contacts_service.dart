@@ -18,7 +18,15 @@ class ContactsService {
   Future<bool> requestPermission() async {
     final status = await Permission.contacts.status;
     if (status.isGranted) return true;
+    if (status.isPermanentlyDenied) {
+      debugPrint('ContactsService: Contacts permission permanently denied, user needs to enable in settings');
+      return false;
+    }
     final result = await Permission.contacts.request();
+    if (result.isPermanentlyDenied) {
+      debugPrint('ContactsService: Contacts permission permanently denied after request');
+      return false;
+    }
     return result.isGranted;
   }
 
@@ -39,12 +47,16 @@ class ContactsService {
         withProperties: true,
       );
 
+      debugPrint('ContactsService: found ${deviceContacts.length} total device contacts');
+
       int imported = 0;
       for (final c in deviceContacts) {
         if (c.phones.isEmpty) continue;
         final phone = c.phones.first.number.trim();
         final name = c.displayName.trim();
         if (name.isEmpty || phone.isEmpty) continue;
+
+        debugPrint('ContactsService: importing contact - name: "$name", phone: "$phone"');
 
         final contact = Contact(
           // Stable id based on device contact id so re-imports update, not duplicate.
@@ -58,7 +70,7 @@ class ContactsService {
         imported++;
       }
 
-      debugPrint('ContactsService: imported $imported device contacts.');
+      debugPrint('ContactsService: successfully imported $imported device contacts.');
       return imported;
     } catch (e) {
       debugPrint('ContactsService: import failed: $e');

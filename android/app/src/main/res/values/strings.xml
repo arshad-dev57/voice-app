@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_service_description">Automatically selects SIM card for voice calls. This service helps blind users by automatically selecting the specified SIM when making calls.</string>
+</resources>

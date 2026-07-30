@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'local_database.dart';
 import 'models.dart';
 import 'package:sqflite/sqflite.dart';
@@ -67,12 +68,21 @@ class LocalRepository {
 
   Future<List<Contact>> searchContacts(String nameQuery) async {
     final db = await _dbHelper.database;
+    final lowerQuery = nameQuery.toLowerCase();
+    debugPrint('LocalRepository: searching for contact with query: "$nameQuery" (lowercase: "$lowerQuery")');
+    
     final result = await db.query(
       'contacts',
-      where: 'name LIKE ?',
-      whereArgs: ['%$nameQuery%'],
+      where: 'LOWER(name) LIKE ?',
+      whereArgs: ['%$lowerQuery%'],
       orderBy: 'name ASC',
     );
+    
+    debugPrint('LocalRepository: found ${result.length} contacts matching "$nameQuery"');
+    for (final map in result) {
+      debugPrint('LocalRepository: matched contact - name: "${map['name']}", phone: "${map['phone_number']}"');
+    }
+    
     return result.map((map) => Contact.fromMap(map)).toList();
   }
 

@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../routing/app_router.dart';
 import '../../../../shared/widgets/voice_orb.dart';
 import '../../../../theme/app_theme.dart';
+import '../../../../core/services/shake_detection_service.dart';
+import '../../../../core/providers/core_providers.dart';
 import '../controllers/assistant_controller.dart';
 
 class VoiceAssistantScreen extends ConsumerStatefulWidget {
@@ -14,13 +16,29 @@ class VoiceAssistantScreen extends ConsumerStatefulWidget {
 
 class _VoiceAssistantScreenState extends ConsumerState<VoiceAssistantScreen> {
   final TextEditingController _textController = TextEditingController();
+  bool _backgroundModeEnabled = false;
 
   @override
   void initState() {
     super.initState();
+    ShakeDetectionService.initialize();
     // Auto start listening on screen open
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      // Speak initial greeting for blind users
+      final tts = ref.read(ttsServiceProvider);
+      await tts.speak('Hello! Press the mic or shake your phone to speak.');
       ref.read(assistantControllerProvider.notifier).toggleListening();
+    });
+  }
+
+  void _toggleBackgroundMode() {
+    setState(() {
+      _backgroundModeEnabled = !_backgroundModeEnabled;
+      if (_backgroundModeEnabled) {
+        ShakeDetectionService.startDetection();
+      } else {
+        ShakeDetectionService.stopDetection();
+      }
     });
   }
 
@@ -71,6 +89,14 @@ class _VoiceAssistantScreenState extends ConsumerState<VoiceAssistantScreen> {
         centerTitle: true,
         actions: [
           IconButton(
+            icon: Icon(
+              _backgroundModeEnabled ? Icons.sensors : Icons.sensors_off,
+              color: _backgroundModeEnabled ? AppTheme.success : null,
+            ),
+            tooltip: 'Background Shake Detection',
+            onPressed: _toggleBackgroundMode,
+          ),
+          IconButton(
             icon: const Icon(Icons.history_rounded),
             onPressed: () => Navigator.pushNamed(context, AppRouter.activityHistory),
           ),
@@ -90,7 +116,7 @@ class _VoiceAssistantScreenState extends ConsumerState<VoiceAssistantScreen> {
           children: [
             // Top Section: Transcript & Assistant Response
             Expanded(
-              child: Padding(
+              child: SingleChildScrollView(
                 padding: const EdgeInsets.all(24.0),
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,

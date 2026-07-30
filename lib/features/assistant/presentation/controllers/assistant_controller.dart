@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:uuid/uuid.dart';
 import '../../../../core/database/models.dart';
 import '../../../../core/providers/core_providers.dart';
 import '../../../../core/services/nlp_engine.dart';
+import '../../../../core/services/shake_detection_service.dart';
 import '../../../../routing/app_router.dart';
 
 enum OrbState { idle, listening, processing, responding, error }
@@ -62,12 +64,56 @@ class AssistantController extends StateNotifier<AssistantState> {
 
   AssistantController(this._ref) : super(AssistantState()) {
     loadHistory();
+    _initializeShakeDetection();
   }
 
   Future<void> loadHistory() async {
     final repo = _ref.read(localRepositoryProvider);
     final hist = await repo.getHistory();
     state = state.copyWith(history: hist);
+  }
+
+  void _initializeShakeDetection() {
+    ShakeDetectionService.initialize();
+    ShakeDetectionService.setOnShakeDetectedCallback(() {
+      _onShakeDetected();
+    });
+  }
+
+  void _onShakeDetected() {
+    // When shake is detected, greet the user and start listening
+    if (state.orbState == OrbState.idle || state.orbState == OrbState.error) {
+      _greetAndListen();
+    }
+  }
+
+  Future<void> _greetAndListen() async {
+    // Random greeting messages for variety
+    final greetings = [
+      'Yes? How can I help you?',
+      'I\'m listening. What do you need?',
+      'Yes, tell me what you want to do.',
+      'I\'m here. How can I assist you?',
+      'What can I do for you?',
+      'Yes, go ahead.',
+      'Listening. What would you like me to do?',
+    ];
+    
+    // Select random greeting
+    final randomGreeting = greetings[DateTime.now().millisecond % greetings.length];
+    
+    // Update state to show assistant is active
+    state = state.copyWith(
+      orbState: OrbState.responding,
+      responseText: randomGreeting,
+    );
+    
+    // Speak greeting
+    await _speakResponse(randomGreeting);
+    
+    // Small delay then start listening
+    await Future.delayed(const Duration(milliseconds: 500));
+    await toggleListening();
   }
 
   void clearNavigation() {
@@ -110,6 +156,7 @@ class AssistantController extends StateNotifier<AssistantState> {
         orbState: OrbState.idle,
         responseText: 'I didn\'t hear anything.',
       );
+      await _speakResponse('I didn\'t hear anything.');
       return;
     }
 
@@ -119,6 +166,29 @@ class AssistantController extends StateNotifier<AssistantState> {
     ); // Simulate brain processing
 
     final cleanText = text.toLowerCase().trim();
+
+    // Clear any pending intent from previous interactions if this is a new command
+    // Check if this is a new command (starts with call, dial, etc.) rather than a response
+    // This allows seamless switching between alarm, call, and other flows
+    if (!state.isConfirming && state.missingField != null) {
+      final isNewCommand = cleanText.startsWith('call ') || 
+                          cleanText.startsWith('dial ') ||
+                          cleanText.startsWith('send ') ||
+                          cleanText.startsWith('text ') ||
+                          cleanText.startsWith('set ') ||
+                          cleanText.startsWith('what ') ||
+                          cleanText.startsWith('read ') ||
+                          cleanText.startsWith('open ') ||
+                          cleanText.contains('call ') ||
+                          cleanText.contains('alarm ') ||
+                          cleanText.contains('dial ') ||
+                          cleanText.contains('wake me up') ||
+                          cleanText.contains('remind ');
+      
+      if (isNewCommand) {
+        state = state.copyWith(pendingIntent: null, missingField: null);
+      }
+    }
 
     // A. Handle Confirmation Flows
     if (state.isConfirming && state.pendingIntent != null) {
@@ -161,6 +231,7 @@ class AssistantController extends StateNotifier<AssistantState> {
           time: state.pendingIntent!.time,
           date: state.pendingIntent!.date,
           targetScreen: state.pendingIntent!.targetScreen,
+          simSlot: state.pendingIntent!.simSlot,
           rawQuery: state.pendingIntent!.rawQuery,
         );
       } else if (field == 'messageText') {
@@ -172,6 +243,7 @@ class AssistantController extends StateNotifier<AssistantState> {
           time: state.pendingIntent!.time,
           date: state.pendingIntent!.date,
           targetScreen: state.pendingIntent!.targetScreen,
+          simSlot: state.pendingIntent!.simSlot,
           rawQuery: state.pendingIntent!.rawQuery,
         );
       } else if (field == 'title') {
@@ -183,6 +255,7 @@ class AssistantController extends StateNotifier<AssistantState> {
           time: state.pendingIntent!.time,
           date: state.pendingIntent!.date,
           targetScreen: state.pendingIntent!.targetScreen,
+          simSlot: state.pendingIntent!.simSlot,
           rawQuery: state.pendingIntent!.rawQuery,
         );
       } else if (field == 'time') {
@@ -194,6 +267,20 @@ class AssistantController extends StateNotifier<AssistantState> {
           time: text,
           date: state.pendingIntent!.date,
           targetScreen: state.pendingIntent!.targetScreen,
+          simSlot: state.pendingIntent!.simSlot,
+          rawQuery: state.pendingIntent!.rawQuery,
+        );
+      } else if (field == 'simSlot') {
+        // User specified the SIM to use
+        updatedIntent = ParsedIntent(
+          intent: state.pendingIntent!.intent,
+          contactName: state.pendingIntent!.contactName,
+          messageText: state.pendingIntent!.messageText,
+          title: state.pendingIntent!.title,
+          time: state.pendingIntent!.time,
+          date: state.pendingIntent!.date,
+          targetScreen: state.pendingIntent!.targetScreen,
+          simSlot: text.toLowerCase(),
           rawQuery: state.pendingIntent!.rawQuery,
         );
       } else {
@@ -249,13 +336,47 @@ class AssistantController extends StateNotifier<AssistantState> {
           await _speakResponse('Who do you want to call?');
         } else {
           // Search contacts in database
-          var matched = await repo.searchContacts(intent.contactName!);
+          var contactName = intent.contactName!;
+          
+          // Aggressive cleaning: remove common command words and prefixes
+          contactName = contactName
+              .replaceAll(RegExp(r'(?i)^call\s+'), '')
+              .replaceAll(RegExp(r'(?i)^dial\s+'), '')
+              .replaceAll(RegExp(r'(?i)^to\s+'), '')
+              .replaceAll(RegExp(r'(?i)^phone\s+'), '')
+              .trim();
+          
+          debugPrint('AssistantController: cleaned contact name from "${intent.contactName}" to "$contactName"');
+          debugPrint('AssistantController: searching for contact "$contactName"');
+          var matched = await repo.searchContacts(contactName);
+          debugPrint('AssistantController: found ${matched.length} contacts in initial search');
+          
           // If not found locally, try importing the phone's real contacts once
           // (e.g. "call Uzair" where Uzair is a device contact), then re-search.
           if (matched.isEmpty) {
-            await _ref.read(contactsServiceProvider).importDeviceContacts(repo);
-            matched = await repo.searchContacts(intent.contactName!);
+            debugPrint('AssistantController: no contacts found, importing device contacts');
+            final imported = await _ref.read(contactsServiceProvider).importDeviceContacts(repo);
+            debugPrint('AssistantController: imported $imported contacts from device');
+            matched = await repo.searchContacts(contactName);
+            debugPrint('AssistantController: found ${matched.length} contacts after import');
           }
+          
+          // Fallback: try partial matching with individual words
+          if (matched.isEmpty && contactName.contains(' ')) {
+            final words = contactName.split(' ');
+            debugPrint('AssistantController: trying partial match with words: $words');
+            for (final word in words) {
+              if (word.length > 2) { // Skip very short words
+                final partialMatch = await repo.searchContacts(word);
+                if (partialMatch.isNotEmpty) {
+                  matched = partialMatch;
+                  debugPrint('AssistantController: found ${matched.length} contacts with partial match "$word"');
+                  break;
+                }
+              }
+            }
+          }
+          
           if (matched.isEmpty) {
             final reply =
                 'I couldn\'t find anyone named ${intent.contactName} in your contacts.';
@@ -278,17 +399,20 @@ class AssistantController extends StateNotifier<AssistantState> {
           } else {
             // Exactly one contact found
             final contact = matched.first;
-            final prompt = 'Do you want to call ${contact.name}?';
+            
+            // Directly call the contact without confirmation
+            // SIM selection will be handled by accessibility service if needed
+            final prompt = 'Calling ${contact.name}.';
             state = state.copyWith(
               orbState: OrbState.responding,
               responseText: prompt,
-              isConfirming: true,
+              isConfirming: false,
               missingField: null,
               pendingIntent: ParsedIntent(
                 intent: AssistantIntent.call,
                 contactName: contact.name,
-                messageText:
-                    contact.phoneNumber, // reuse field for target phone
+                messageText: contact.phoneNumber,
+                simSlot: intent.simSlot,
                 rawQuery: intent.rawQuery,
               ),
             );
@@ -357,40 +481,40 @@ class AssistantController extends StateNotifier<AssistantState> {
           );
           await _speakResponse('What time should I set the alarm for?');
         } else {
-          // Save a copy in-app for the UI list...
-          final alarm = Alarm(
-            id: const Uuid().v4(),
-            time: intent.time!,
-            label: 'Voice Alarm',
-            isEnabled: true,
-            repeatDays: 'Everyday',
-            createdAt: DateTime.now(),
-          );
-          await repo.insertAlarm(alarm);
-
-          // ...and set a REAL alarm in the phone's Clock app.
+          // Use the new AlarmService to set both local and system alarms
           final hm = _parseTimeToHourMinute(intent.time!);
           if (hm != null) {
-            await _ref
-                .read(phoneServiceProvider)
-                .setSystemAlarm(
-                  hour: hm[0],
-                  minute: hm[1],
-                  label: 'Voice Alarm',
-                );
+            final success = await _ref.read(alarmServiceProvider).setAlarm(
+              hour: hm[0],
+              minute: hm[1],
+              label: 'Voice Alarm',
+              repeatDays: 'Everyday',
+              repository: repo,
+            );
+
+            final reply = success
+                ? 'Your alarm has been set for ${intent.time} in both the app and your system clock.'
+                : 'Your alarm has been set for ${intent.time} in the app. Please check your system clock app.';
+            
+            state = state.copyWith(
+              orbState: OrbState.responding,
+              responseText: reply,
+              isConfirming: false,
+              pendingIntent: null,
+              missingField: null,
+            );
+            await _speakResponse(reply);
+            _logHistory(intent.rawQuery, reply, 'alarm');
+          } else {
+            final reply = 'I couldn\'t understand the time. Please say it again, like "8 PM" or "7:30 AM".';
+            state = state.copyWith(
+              orbState: OrbState.responding,
+              responseText: reply,
+              missingField: 'time',
+              pendingIntent: intent,
+            );
+            await _speakResponse(reply);
           }
-
-          final reply = 'Your alarm has been set for ${intent.time}.';
-
-          state = state.copyWith(
-            orbState: OrbState.responding,
-            responseText: reply,
-            isConfirming: false,
-            pendingIntent: null,
-            missingField: null,
-          );
-          await _speakResponse(reply);
-          _logHistory(intent.rawQuery, reply, 'alarm');
         }
         break;
 
@@ -599,23 +723,49 @@ class AssistantController extends StateNotifier<AssistantState> {
       case AssistantIntent.call:
         // Intent uses messageText as placeholder for phoneNumber
         final name = intent.contactName ?? 'Someone';
-        // ignore: unused_local_variable
         final phone = intent.messageText ?? '';
-        final response = 'Calling $name.';
+        final simName = intent.simSlot;
+        final response = simName != null ? 'Calling $name from $simName.' : 'Calling $name.';
 
+        // Debug logging
+        print('AssistantController: Attempting to call $name with phone: "$phone" on SIM: "$simName"');
+
+        // Set target SIM for accessibility service if specified
+        if (simName != null) {
+          await _ref.read(phoneServiceProvider).setTargetSim(simName);
+        }
+
+        // Get SIM slot index from SIM name
+        int? simSlot;
+        if (simName != null) {
+          simSlot = _ref.read(phoneServiceProvider).getSimSlotFromName(simName);
+          print('AssistantController: Mapped SIM name "$simName" to slot: $simSlot');
+        }
+
+        // Make a real phone call using the native dialer
+        bool callLaunched = false;
+        if (phone.isNotEmpty) {
+          callLaunched = await _ref
+              .read(phoneServiceProvider)
+              .makePhoneCall(phoneNumber: phone, simSlot: simSlot);
+          print('AssistantController: Call launched: $callLaunched');
+        } else {
+          print('AssistantController: Phone number is empty!');
+        }
+
+        final finalResponse = callLaunched
+            ? response
+            : 'I couldn\'t launch the phone dialer for $name. Please check permissions.';
+        
         state = state.copyWith(
           orbState: OrbState.responding,
-          responseText: response,
+          responseText: finalResponse,
           isConfirming: false,
           pendingIntent: null,
-          navigationTarget:
-              AppRouter.callManagement, // UI will intercept and pass phone args
         );
 
-        // Also pass arguments in settings controller if required, or let UI route read it.
-        // We will store call details in dynamic provider later
-        await _speakResponse(response);
-        _logHistory(intent.rawQuery, response, 'call');
+        await _speakResponse(finalResponse);
+        _logHistory(intent.rawQuery, finalResponse, 'call');
         break;
 
       case AssistantIntent.message:

@@ -8,6 +8,7 @@ import '../services/shake_service.dart';
 import '../services/firebase_service.dart';
 import '../services/contacts_service.dart';
 import '../services/phone_service.dart';
+import '../services/alarm_service.dart';
 
 final localRepositoryProvider = Provider<LocalRepository>((ref) {
   return LocalRepository();
@@ -39,6 +40,10 @@ final notificationServiceProvider = Provider<NotificationService>((ref) {
 
 final shakeServiceProvider = Provider<ShakeService>((ref) {
   return ShakeService.instance;
+});
+
+final alarmServiceProvider = Provider<AlarmService>((ref) {
+  return AlarmService.instance;
 });
 
 // Future Providers for Dashboard data

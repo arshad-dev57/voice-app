@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:uuid/uuid.dart';
 import '../../../../core/database/models.dart';
 import '../../../../core/providers/core_providers.dart';
 import '../../../../theme/app_theme.dart';
@@ -91,21 +90,29 @@ class _AlarmScreenState extends ConsumerState<AlarmScreen> {
             ElevatedButton(
               onPressed: () async {
                 final label = _labelController.text.trim().isEmpty ? 'Alarm' : _labelController.text.trim();
-                final hourStr = picked.hour.toString().padLeft(2, '0');
-                final minStr = picked.minute.toString().padLeft(2, '0');
                 
-                final alarm = Alarm(
-                  id: const Uuid().v4(),
-                  time: '$hourStr:$minStr',
+                // Use AlarmService to set both local and system alarm
+                final success = await ref.read(alarmServiceProvider).setAlarm(
+                  hour: picked.hour,
+                  minute: picked.minute,
                   label: label,
-                  isEnabled: true,
                   repeatDays: 'Mon,Tue,Wed,Thu,Fri',
-                  createdAt: DateTime.now(),
+                  repository: ref.read(localRepositoryProvider),
                 );
 
-                await ref.read(localRepositoryProvider).insertAlarm(alarm);
+                if (!mounted) return;
                 Navigator.pop(context);
                 _loadAlarms();
+                
+                if (success) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Alarm set in both app and system clock')),
+                  );
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Alarm set in app. Check system clock app.')),
+                  );
+                }
               },
               style: ElevatedButton.styleFrom(backgroundColor: AppTheme.primary),
               child: const Text('SAVE'),
@@ -124,6 +131,13 @@ class _AlarmScreenState extends ConsumerState<AlarmScreen> {
       appBar: AppBar(
         title: const Text('Alarms'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.alarm),
+            onPressed: () async {
+              await ref.read(alarmServiceProvider).openSystemAlarmApp();
+            },
+            tooltip: 'Open System Clock',
+          ),
           IconButton(
             icon: const Icon(Icons.add_alarm_rounded),
             onPressed: _addNewAlarm,

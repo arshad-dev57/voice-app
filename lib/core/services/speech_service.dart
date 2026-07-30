@@ -17,6 +17,7 @@ class SpeechService {
         onError: (val) => debugPrint('SpeechService Error: $val'),
         onStatus: (val) => debugPrint('SpeechService Status: $val'),
       );
+      debugPrint('SpeechService initialized: $_isInitialized');
     } catch (e) {
       debugPrint('SpeechService Initialization Exception: $e');
       _isInitialized = false;
@@ -59,10 +60,10 @@ class SpeechService {
             onResult(result.recognizedWords);
           }
         },
-        listenFor: const Duration(seconds: 30),
-        pauseFor: const Duration(seconds: 5),
+        listenFor: const Duration(seconds: 60),
+        pauseFor: const Duration(seconds: 15),
         listenOptions: stt.SpeechListenOptions(
-          cancelOnError: true,
+          cancelOnError: false,
           partialResults: true,
         ),
       );

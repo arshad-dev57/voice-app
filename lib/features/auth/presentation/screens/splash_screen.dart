@@ -37,11 +37,20 @@ class _SplashScreenState extends ConsumerState<SplashScreen> with SingleTickerPr
   }
 
   Future<void> _navigateToNext() async {
+    // Wait for the minimum splash duration
     await Future.delayed(const Duration(milliseconds: 2500));
     if (!mounted) return;
 
+    // Wait for auth check to complete if still loading
     final authState = ref.read(authControllerProvider);
-    if (authState.isAuthenticated) {
+    if (authState.isLoading) {
+      await ref.read(authControllerProvider.notifier).checkAuthStatus();
+    }
+
+    if (!mounted) return;
+
+    final finalAuthState = ref.read(authControllerProvider);
+    if (finalAuthState.isAuthenticated) {
       Navigator.pushReplacementNamed(context, AppRouter.home);
     } else {
       Navigator.pushReplacementNamed(context, AppRouter.onboarding);

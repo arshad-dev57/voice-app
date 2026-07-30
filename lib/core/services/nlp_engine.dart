@@ -24,6 +24,7 @@ class ParsedIntent {
   final String? time;
   final String? date;
   final String? targetScreen;
+  final String? simSlot; // "0" for SIM1, "1" for SIM2, or carrier name like "zong"
   final String rawQuery;
 
   ParsedIntent({
@@ -34,12 +35,13 @@ class ParsedIntent {
     this.time,
     this.date,
     this.targetScreen,
+    this.simSlot,
     required this.rawQuery,
   });
 
   @override
   String toString() {
-    return 'ParsedIntent(intent: $intent, contact: $contactName, message: $messageText, title: $title, time: $time, date: $date, screen: $targetScreen)';
+    return 'ParsedIntent(intent: $intent, contact: $contactName, message: $messageText, title: $title, time: $time, date: $date, screen: $targetScreen, sim: $simSlot)';
   }
 }
 
@@ -59,14 +61,23 @@ class NlpEngine {
 
     // 3. CALL INTENT
     // e.g. "Call Ali", "Dial Ahmed", "Ali ko call karo", "Mom ko phone karo"
+    // Also supports SIM selection: "Call Ali from Zong", "Dial Ahmed on Jazz"
+    // Enhanced patterns for better detection in mixed contexts
     if (cleanQuery.startsWith('call ') || 
         cleanQuery.startsWith('dial ') || 
         cleanQuery.endsWith(' ko call karo') || 
         cleanQuery.endsWith(' ko phone karo') ||
         cleanQuery.endsWith(' ko call lagao') ||
-        cleanQuery.contains(' phone karo ')) {
+        cleanQuery.contains(' phone karo ') ||
+        cleanQuery.contains(' call ') ||
+        cleanQuery.contains(' dial ') ||
+        cleanQuery.startsWith('i want to call ') ||
+        cleanQuery.startsWith('please call ') ||
+        cleanQuery.startsWith('can you call ')) {
       
       String name = '';
+      String? simSlot;
+      
       if (cleanQuery.startsWith('call ')) {
         name = cleanQuery.replaceFirst('call ', '');
       } else if (cleanQuery.startsWith('dial ')) {
@@ -77,11 +88,45 @@ class NlpEngine {
         name = cleanQuery.replaceFirst(' ko phone karo', '');
       } else if (cleanQuery.endsWith(' ko call lagao')) {
         name = cleanQuery.replaceFirst(' ko call lagao', '');
+      } else if (cleanQuery.contains(' phone karo ')) {
+        // Handle "Ali ko phone karo" pattern
+        final parts = cleanQuery.split(' phone karo ');
+        name = parts[0].trim();
       }
+      
+      // Extract SIM slot if specified
+      // Patterns: "from zong", "on jazz", "se zong", "via jazz", "zong se"
+      if (name.contains(' from ')) {
+        final parts = name.split(' from ');
+        name = parts[0].trim();
+        simSlot = parts[1].trim();
+      } else if (name.contains(' on ')) {
+        final parts = name.split(' on ');
+        name = parts[0].trim();
+        simSlot = parts[1].trim();
+      } else if (name.contains(' se ')) {
+        final parts = name.split(' se ');
+        name = parts[0].trim();
+        simSlot = parts[1].trim();
+      } else if (name.contains(' via ')) {
+        final parts = name.split(' via ');
+        name = parts[0].trim();
+        simSlot = parts[1].trim();
+      }
+      
+      // Remove common prepositions from name (e.g., "to salman" -> "salman")
+      if (name.startsWith('to ')) {
+        name = name.replaceFirst('to ', '').trim();
+      }
+      
+      // Debug logging
+      print('NlpEngine: Parsed call intent - name: "$name", simSlot: "$simSlot"');
+      print('NlpEngine: Capitalized name: "${_capitalize(name.trim())}"');
       
       return ParsedIntent(
         intent: AssistantIntent.call,
         contactName: _capitalize(name.trim()),
+        simSlot: simSlot?.toLowerCase(),
         rawQuery: query,
       );
     }
@@ -142,7 +187,17 @@ class NlpEngine {
 
     // 5. ALARM INTENTS
     // "set alarm for 7 am tomorrow", "wake me up at 6 am", "alarm laga do 7 baje"
-    if (cleanQuery.contains('alarm') || cleanQuery.contains('wake me up') || cleanQuery.contains('baje ka alarm')) {
+    // Enhanced patterns for better detection in mixed contexts
+    if (cleanQuery.contains('alarm') || 
+        cleanQuery.contains('wake me up') || 
+        cleanQuery.contains('baje ka alarm') ||
+        cleanQuery.contains('set an alarm') ||
+        cleanQuery.contains('alarm set') ||
+        cleanQuery.contains('alarm lagao') ||
+        cleanQuery.contains('alarm laga') ||
+        cleanQuery.startsWith('i want to set an alarm') ||
+        cleanQuery.startsWith('please set alarm') ||
+        cleanQuery.startsWith('can you set alarm')) {
       final timeStr = _extractTime(cleanQuery);
       final dateStr = cleanQuery.contains('tomorrow') || cleanQuery.contains('kal') ? 'tomorrow' : 'today';
       return ParsedIntent(
@@ -280,23 +335,35 @@ class NlpEngine {
   }
 
   static String? _extractTime(String query) {
-    // Regex matches e.g. "7:00 am", "9 pm", "10:30", "5 baje"
+    // Enhanced regex matches e.g. "7:00 am", "9 pm", "10:30", "5 baje", "at 8 pm", "for 8:30"
+    // Handles patterns: "at X", "for X", "set alarm X", "wake me up X"
     final timeRegex = RegExp(r'(\d{1,2})(:\d{2})?\s*(am|pm|baje)?');
     final match = timeRegex.firstMatch(query);
     if (match != null) {
       String hour = match.group(1)!;
       String min = match.group(2) ?? ':00';
-      String period = match.group(3) ?? 'pm';
+      String period = match.group(3)?.toLowerCase() ?? '';
 
-      if (period == 'baje') {
-        // Urdu "baje", assume logic or just keep time string
-        int h = int.parse(hour);
-        if (h < 8) {
-          // simple heuristic, e.g. 5 baje -> 5 PM
+      // If no period specified, try to infer from context
+      if (period.isEmpty) {
+        // Check for time indicators in the query
+        if (query.contains('morning') || query.contains('subah')) {
+          period = 'am';
+        } else if (query.contains('evening') || query.contains('shaam')) {
+          period = 'pm';
+        } else if (query.contains('night') || query.contains('raat')) {
           period = 'pm';
         } else {
-          period = 'am';
+          // Default to PM for times >= 7, AM otherwise
+          int h = int.parse(hour);
+          period = h >= 7 && h <= 11 ? 'pm' : 'am';
         }
+      }
+
+      if (period == 'baje') {
+        // Urdu "baje" - use heuristic
+        int h = int.parse(hour);
+        period = h < 8 ? 'pm' : 'am';
       }
 
       return '$hour$min ${period.toUpperCase()}';
