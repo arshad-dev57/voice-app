@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../theme/app_theme.dart';
 import '../controllers/settings_controller.dart';
+import '../../../../l10n/app_localizations.dart';
 
 class LanguageSettingsScreen extends ConsumerWidget {
   const LanguageSettingsScreen({super.key});
@@ -11,16 +12,17 @@ class LanguageSettingsScreen extends ConsumerWidget {
     final settings = ref.watch(settingsControllerProvider);
     final notifier = ref.read(settingsControllerProvider.notifier);
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final l10n = AppLocalizations.of(context)!;
 
     final languages = [
-      {'code': 'en', 'name': 'English', 'desc': 'Standard Voice Commands & Responses'},
-      {'code': 'ur', 'name': 'اردو (Urdu)', 'desc': 'صوتی احکامات اور تاثرات اردو میں'},
-      {'code': 'roman_ur', 'name': 'Roman Urdu', 'desc': 'Urdu written in English script (e.g. Call karo)'},
+      {'code': 'en', 'name': l10n.english, 'desc': l10n.englishDescription},
+      {'code': 'ur', 'name': l10n.urdu, 'desc': l10n.urduDescription},
+      {'code': 'roman_ur', 'name': l10n.romanUrdu, 'desc': l10n.romanUrduDescription},
     ];
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Language Settings'),
+        title: Text(l10n.languageSettings),
       ),
       body: Container(
         decoration: BoxDecoration(
@@ -36,14 +38,14 @@ class LanguageSettingsScreen extends ConsumerWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text(
-              'Select Language Layout',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            Text(
+              l10n.selectLanguageLayout,
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
-            const Text(
-              'Change the voice input matching and vocal speech synthesis response language.',
-              style: TextStyle(color: Colors.grey, fontSize: 13),
+            Text(
+              l10n.selectLanguageLayoutDescription,
+              style: const TextStyle(color: Colors.grey, fontSize: 13),
             ),
             const SizedBox(height: 24),
             Expanded(

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'core/services/notification_service.dart';
 import 'core/services/alarm_service.dart';
@@ -8,6 +9,7 @@ import 'firebase_options.dart';
 import 'features/settings/presentation/controllers/settings_controller.dart';
 import 'routing/app_router.dart';
 import 'theme/app_theme.dart';
+import 'l10n/app_localizations.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -42,12 +44,36 @@ class SmartVoiceAssistantApp extends ConsumerWidget {
         ? ThemeMode.light
         : ThemeMode.dark;
 
+    // Map language code to Locale
+    Locale getLocale(String languageCode) {
+      switch (languageCode) {
+        case 'ur':
+          return const Locale('ur');
+        case 'roman_ur':
+          return const Locale('en'); // Roman Urdu uses English locale for UI
+        case 'en':
+        default:
+          return const Locale('en');
+      }
+    }
+
     return MaterialApp(
       title: 'Smart Voice Assistant',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
       darkTheme: AppTheme.darkTheme,
       themeMode: themeMode,
+      locale: getLocale(settings.language),
+      localizationsDelegates: const [
+        AppLocalizations.delegate,
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      supportedLocales: const [
+        Locale('en'),
+        Locale('ur'),
+      ],
       initialRoute: AppRouter.splash,
       onGenerateRoute: AppRouter.generateRoute,
     );

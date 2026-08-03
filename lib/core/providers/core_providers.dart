@@ -9,6 +9,8 @@ import '../services/firebase_service.dart';
 import '../services/contacts_service.dart';
 import '../services/phone_service.dart';
 import '../services/alarm_service.dart';
+import '../services/localized_responses.dart';
+import '../services/permission_service.dart';
 
 final localRepositoryProvider = Provider<LocalRepository>((ref) {
   return LocalRepository();
@@ -44,6 +46,14 @@ final shakeServiceProvider = Provider<ShakeService>((ref) {
 
 final alarmServiceProvider = Provider<AlarmService>((ref) {
   return AlarmService.instance;
+});
+
+final permissionServiceProvider = Provider<PermissionService>((ref) {
+  return PermissionService.instance;
+});
+
+final localizedResponsesProvider = Provider<LocalizedResponses>((ref) {
+  return LocalizedResponses();
 });
 
 // Future Providers for Dashboard data

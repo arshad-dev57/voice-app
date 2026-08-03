@@ -145,27 +145,21 @@ class PhoneService {
       
       // Add SIM slot for dual SIM devices
       // Different manufacturers use different extras for SIM selection
-      if (simSlot != null) {
-        // Try multiple possible extras for SIM selection across different Android versions
-        // Slot index approach (works on some devices)
-        arguments['com.android.phone.extra.slot'] = simSlot;
-        arguments['slot'] = simSlot;
-        
-        // Subscription ID approach (more reliable on newer Android)
-        arguments['android.intent.extra.SUBSCRIPTION'] = simSlot;
-        arguments['android.intent.extra.SUBSCRIPTION'] = simSlot.toString();
-        
-        // Manufacturer-specific extras
-        arguments['com.android.phone.extra.SUBSCRIPTION'] = simSlot;
-        arguments['com.android.phone.extra.SUBSCRIPTION'] = simSlot.toString();
-        arguments['com.samsung.android.telephony.extra.SUBSCRIPTION'] = simSlot;
-        
-        // Alternative keys used by some OEMs
-        arguments['simId'] = simSlot;
-        arguments['sim_slot'] = simSlot;
-        
-        debugPrint('PhoneService: Added SIM slot $simSlot to CALL intent with multiple extras');
-      }
+      // Default to SIM 1 (slot 0) if no specific SIM requested to prevent OS SIM selection dialog
+      final targetSlot = simSlot ?? 0;
+      
+      arguments['com.android.phone.extra.slot'] = targetSlot;
+      arguments['slot'] = targetSlot;
+      arguments['android.intent.extra.SUBSCRIPTION'] = targetSlot;
+      arguments['android.intent.extra.SUBSCRIPTION'] = targetSlot.toString();
+      arguments['com.android.phone.extra.SUBSCRIPTION'] = targetSlot;
+      arguments['com.android.phone.extra.SUBSCRIPTION'] = targetSlot.toString();
+      arguments['com.samsung.android.telephony.extra.SUBSCRIPTION'] = targetSlot;
+      arguments['simId'] = targetSlot;
+      arguments['sim_slot'] = targetSlot;
+      arguments['sim_slot_id'] = targetSlot;
+      
+      debugPrint('PhoneService: Configured SIM slot $targetSlot in CALL intent extras');
 
       final intent = AndroidIntent(
         action: 'android.intent.action.CALL',

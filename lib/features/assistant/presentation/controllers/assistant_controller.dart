@@ -7,7 +7,9 @@ import '../../../../core/database/models.dart';
 import '../../../../core/providers/core_providers.dart';
 import '../../../../core/services/nlp_engine.dart';
 import '../../../../core/services/shake_detection_service.dart';
+import '../../../../core/services/localized_responses.dart';
 import '../../../../routing/app_router.dart';
+import '../../../settings/presentation/controllers/settings_controller.dart';
 
 enum OrbState { idle, listening, processing, responding, error }
 
@@ -20,19 +22,22 @@ class AssistantState {
   // Conversational session context
   final bool isConfirming;
   final ParsedIntent? pendingIntent;
-  final String?
-  missingField; // "contactName", "messageText", "title", "time", "date"
-  final String? navigationTarget; // Screen name to navigate to
+  final String? missingField;
+  final String? navigationTarget;
+
+  // Multiple contacts disambiguation
+  final List<Contact>? multipleContacts;
 
   AssistantState({
     this.orbState = OrbState.idle,
     this.transcript = '',
-    this.responseText = 'Hello! Press the mic or shake your phone to speak.',
+    this.responseText = 'Hello! Shake your phone or tap the mic to speak.',
     this.history = const [],
     this.isConfirming = false,
     this.pendingIntent,
     this.missingField,
     this.navigationTarget,
+    this.multipleContacts,
   });
 
   AssistantState copyWith({
@@ -44,6 +49,11 @@ class AssistantState {
     ParsedIntent? pendingIntent,
     String? missingField,
     String? navigationTarget,
+    List<Contact>? multipleContacts,
+    bool clearMultipleContacts = false,
+    bool clearPendingIntent = false,
+    bool clearMissingField = false,
+    bool clearNavigationTarget = false,
   }) {
     return AssistantState(
       orbState: orbState ?? this.orbState,
@@ -51,725 +61,703 @@ class AssistantState {
       responseText: responseText ?? this.responseText,
       history: history ?? this.history,
       isConfirming: isConfirming ?? this.isConfirming,
-      pendingIntent: pendingIntent ?? this.pendingIntent,
-      missingField: missingField ?? this.missingField,
-      navigationTarget:
-          navigationTarget, // If null is passed, clear navigationTarget
+      pendingIntent: clearPendingIntent ? null : (pendingIntent ?? this.pendingIntent),
+      missingField: clearMissingField ? null : (missingField ?? this.missingField),
+      navigationTarget: clearNavigationTarget ? null : navigationTarget,
+      multipleContacts: clearMultipleContacts ? null : (multipleContacts ?? this.multipleContacts),
     );
   }
 }
+
+// ========================================================================== //
+//  AssistantController                                                         //
+// ========================================================================== //
 
 class AssistantController extends StateNotifier<AssistantState> {
   final Ref _ref;
 
   AssistantController(this._ref) : super(AssistantState()) {
-    loadHistory();
-    _initializeShakeDetection();
+    _initialize();
   }
 
-  Future<void> loadHistory() async {
+  // ---------------------------------------------------------------------- //
+  //  Initialization                                                          //
+  // ---------------------------------------------------------------------- //
+
+  Future<void> _initialize() async {
+    // 1. Load history
+    await loadHistory();
+
+    // 2. Apply current language to TTS
+    _syncLanguageToServices();
+
+    // 3. Request permissions upfront (with voice feedback if denied)
+    await _ref.read(permissionServiceProvider).requestAllCriticalPermissions(
+      speakFeedback: true,
+    );
+
+    // 4. Import device contacts into local DB (if not already done)
     final repo = _ref.read(localRepositoryProvider);
-    final hist = await repo.getHistory();
-    state = state.copyWith(history: hist);
+    final existing = await repo.getContacts();
+    if (existing.length <= 5) {
+      // Only 5 mock contacts in DB — import real device contacts
+      debugPrint('AssistantController: importing device contacts...');
+      await _ref.read(contactsServiceProvider).importDeviceContacts(repo);
+    }
+
+    // 5. Initialize shake detection (this also starts the Android service)
+    _initializeShakeDetection();
+
+    // 6. Update initial greeting in correct language
+    Future.delayed(const Duration(milliseconds: 200), () {
+      if (!mounted) return;
+      final settings = _ref.read(settingsControllerProvider);
+      final language = settings.language;
+      state = state.copyWith(
+        responseText: LocalizedResponses.getResponse(language, 'initialGreeting'),
+      );
+    });
+  }
+
+  void _syncLanguageToServices() {
+    final settings = _ref.read(settingsControllerProvider);
+    final language = settings.language;
+    _ref.read(ttsServiceProvider).setLanguageCode(language);
+    // Note: SpeechService always uses en-US regardless of app language
+    // (see SpeechService class documentation for rationale)
   }
 
   void _initializeShakeDetection() {
+    // initialize() both registers the method channel handler AND starts
+    // the Android foreground service — previously only initialize() was called
+    // without ever calling startDetection(), so the service never ran.
     ShakeDetectionService.initialize();
     ShakeDetectionService.setOnShakeDetectedCallback(() {
       _onShakeDetected();
     });
+    debugPrint('AssistantController: shake detection initialized and service started');
   }
 
+  // ---------------------------------------------------------------------- //
+  //  Shake handler                                                           //
+  // ---------------------------------------------------------------------- //
+
+  // ---------------------------------------------------------------------- //
+  //  Shake handler                                                           //
+  // ---------------------------------------------------------------------- //
+
   void _onShakeDetected() {
-    // When shake is detected, greet the user and start listening
-    if (state.orbState == OrbState.idle || state.orbState == OrbState.error) {
+    if (!mounted) return;
+    // Always wake up on shake unless the assistant is currently speaking via TTS.
+    // If an STT session was active, cancel it and start fresh.
+    if (state.orbState != OrbState.responding) {
+      debugPrint('AssistantController: shake detected, starting fresh voice session');
+      _ref.read(speechServiceProvider).cancelListening();
       _greetAndListen();
+    } else {
+      debugPrint('AssistantController: shake ignored because assistant is speaking');
     }
   }
 
   Future<void> _greetAndListen() async {
-    // Random greeting messages for variety
+    if (!mounted) return;
+    final settings = _ref.read(settingsControllerProvider);
+    final language = settings.language;
+
     final greetings = [
-      'Yes? How can I help you?',
-      'I\'m listening. What do you need?',
-      'Yes, tell me what you want to do.',
-      'I\'m here. How can I assist you?',
-      'What can I do for you?',
-      'Yes, go ahead.',
-      'Listening. What would you like me to do?',
+      LocalizedResponses.getResponse(language, 'greeting1'),
+      LocalizedResponses.getResponse(language, 'greeting2'),
+      LocalizedResponses.getResponse(language, 'greeting3'),
+      LocalizedResponses.getResponse(language, 'greeting4'),
+      LocalizedResponses.getResponse(language, 'greeting5'),
+      LocalizedResponses.getResponse(language, 'greeting6'),
+      LocalizedResponses.getResponse(language, 'greeting7'),
     ];
-    
-    // Select random greeting
-    final randomGreeting = greetings[DateTime.now().millisecond % greetings.length];
-    
-    // Update state to show assistant is active
+
+    final greeting = greetings[DateTime.now().millisecond % greetings.length];
+
     state = state.copyWith(
       orbState: OrbState.responding,
-      responseText: randomGreeting,
+      responseText: greeting,
     );
-    
-    // Speak greeting
-    await _speakResponse(randomGreeting);
-    
-    // Small delay then start listening
-    await Future.delayed(const Duration(milliseconds: 500));
-    await toggleListening();
+
+    // Await TTS completion before starting microphone.
+    // This prevents the mic from picking up the TTS output.
+    await _speakAndWait(greeting);
+
+    // Small gap between TTS end and mic start
+    await Future.delayed(const Duration(milliseconds: 300));
+
+    if (mounted) {
+      await _startListening();
+    }
   }
 
-  void clearNavigation() {
-    state = state.copyWith(navigationTarget: null);
-  }
+  // ---------------------------------------------------------------------- //
+  //  Microphone control                                                      //
+  // ---------------------------------------------------------------------- //
 
   Future<void> toggleListening() async {
     final speech = _ref.read(speechServiceProvider);
     if (speech.isListening) {
       await speech.stopListening();
-      state = state.copyWith(orbState: OrbState.idle);
+      if (mounted) state = state.copyWith(orbState: OrbState.idle);
     } else {
-      state = state.copyWith(
-        orbState: OrbState.listening,
-        transcript: 'Listening...',
-      );
-
-      await speech.startListening(
-        onResult: (text) {
-          state = state.copyWith(transcript: text);
-        },
-        onSoundLevelChanged: () {},
-        onError: () {
-          state = state.copyWith(
-            orbState: OrbState.error,
-            responseText: 'Microphone error or permission denied.',
-          );
-          _speakResponse('Microphone error or permission denied.');
-        },
-        onComplete: () {
-          processSpokenText(state.transcript);
-        },
-      );
+      await _startListening();
     }
   }
 
-  Future<void> processSpokenText(String text) async {
-    if (text.isEmpty || text == 'Listening...') {
-      state = state.copyWith(
-        orbState: OrbState.idle,
-        responseText: 'I didn\'t hear anything.',
-      );
-      await _speakResponse('I didn\'t hear anything.');
+  Future<void> _startListening() async {
+    if (!mounted) return;
+    final settings = _ref.read(settingsControllerProvider);
+    final language = settings.language;
+
+    // Check microphone permission first
+    final hasMic = await _ref
+        .read(permissionServiceProvider)
+        .ensureMicrophonePermission();
+    if (!hasMic) {
+      if (mounted) {
+        state = state.copyWith(
+          orbState: OrbState.error,
+          responseText: LocalizedResponses.getResponse(language, 'microphoneError'),
+        );
+      }
       return;
     }
 
-    state = state.copyWith(orbState: OrbState.processing);
-    await Future.delayed(
-      const Duration(milliseconds: 600),
-    ); // Simulate brain processing
+    if (mounted) {
+      state = state.copyWith(
+        orbState: OrbState.listening,
+        transcript: LocalizedResponses.getResponse(language, 'listening'),
+      );
+    }
+
+    await _ref.read(speechServiceProvider).startListening(
+      onResult: (text) {
+        // Update transcript live as the user speaks (partial results for UI)
+        if (mounted) {
+          state = state.copyWith(transcript: text);
+        }
+      },
+      onError: () {
+        if (!mounted) return;
+        debugPrint('AssistantController: STT error/timeout — resetting to idle');
+        final errorMsg = LocalizedResponses.getResponse(language, 'didntHear');
+        state = state.copyWith(
+          orbState: OrbState.idle,
+          responseText: errorMsg,
+        );
+        _speakAndWait(errorMsg);
+      },
+      onDone: (finalText) {
+        // Called exactly once with the definitive recognised text
+        if (mounted) {
+          processSpokenText(finalText);
+        }
+      },
+    );
+  }
+
+  void clearNavigation() {
+    state = state.copyWith(clearNavigationTarget: true);
+  }
+
+  // ---------------------------------------------------------------------- //
+  //  History                                                                 //
+  // ---------------------------------------------------------------------- //
+
+  Future<void> loadHistory() async {
+    final repo = _ref.read(localRepositoryProvider);
+    final hist = await repo.getHistory();
+    if (mounted) state = state.copyWith(history: hist);
+  }
+
+  // ---------------------------------------------------------------------- //
+  //  Text processing                                                         //
+  // ---------------------------------------------------------------------- //
+
+  Future<void> processSpokenText(String text) async {
+    if (!mounted) return;
+    final settings = _ref.read(settingsControllerProvider);
+    final language = settings.language;
+
+    debugPrint('AssistantController: processSpokenText("$text")');
+
+    // Empty input
+    if (text.trim().isEmpty ||
+        text == LocalizedResponses.getResponse(language, 'listening')) {
+      final didntHear = LocalizedResponses.getResponse(language, 'didntHear');
+      if (mounted) {
+        state = state.copyWith(orbState: OrbState.idle, responseText: didntHear);
+      }
+      await _speakAndWait(didntHear);
+      return;
+    }
+
+    if (mounted) state = state.copyWith(orbState: OrbState.processing);
+    await Future.delayed(const Duration(milliseconds: 400));
 
     final cleanText = text.toLowerCase().trim();
 
-    // Clear any pending intent from previous interactions if this is a new command
-    // Check if this is a new command (starts with call, dial, etc.) rather than a response
-    // This allows seamless switching between alarm, call, and other flows
-    if (!state.isConfirming && state.missingField != null) {
-      final isNewCommand = cleanText.startsWith('call ') || 
-                          cleanText.startsWith('dial ') ||
-                          cleanText.startsWith('send ') ||
-                          cleanText.startsWith('text ') ||
-                          cleanText.startsWith('set ') ||
-                          cleanText.startsWith('what ') ||
-                          cleanText.startsWith('read ') ||
-                          cleanText.startsWith('open ') ||
-                          cleanText.contains('call ') ||
-                          cleanText.contains('alarm ') ||
-                          cleanText.contains('dial ') ||
-                          cleanText.contains('wake me up') ||
-                          cleanText.contains('remind ');
-      
-      if (isNewCommand) {
-        state = state.copyWith(pendingIntent: null, missingField: null);
-      }
+    // ---------------------------------------------------------------- //
+    //  A. Multiple contacts disambiguation                               //
+    // ---------------------------------------------------------------- //
+    if (state.multipleContacts != null && state.multipleContacts!.isNotEmpty) {
+      await _handleDisambiguation(text, cleanText);
+      return;
     }
 
-    // A. Handle Confirmation Flows
+    // ---------------------------------------------------------------- //
+    //  B. Confirmation flow (message, event, reminder)                  //
+    // ---------------------------------------------------------------- //
     if (state.isConfirming && state.pendingIntent != null) {
-      final isYes = _matchesYes(cleanText);
-      final isNo = _matchesNo(cleanText);
-
-      if (isYes) {
+      if (_matchesYes(cleanText)) {
         await _executeIntent(state.pendingIntent!);
-      } else if (isNo) {
-        state = state.copyWith(
-          orbState: OrbState.responding,
-          responseText: 'Okay, cancelled.',
-          isConfirming: false,
-          pendingIntent: null,
-          missingField: null,
-        );
-        await _speakResponse('Okay, cancelled.');
+      } else if (_matchesNo(cleanText)) {
+        final cancelled = LocalizedResponses.getResponse(language, 'cancelled');
+        if (mounted) {
+          state = state.copyWith(
+            orbState: OrbState.responding,
+            responseText: cancelled,
+            isConfirming: false,
+            clearPendingIntent: true,
+            clearMissingField: true,
+          );
+        }
+        await _speakAndWait(cancelled);
       } else {
-        final prompt = 'Please say Yes or No. Do you want to proceed?';
-        state = state.copyWith(
-          orbState: OrbState.responding,
-          responseText: prompt,
-        );
-        await _speakResponse(prompt);
+        final prompt = LocalizedResponses.getResponse(language, 'yesNoPrompt');
+        if (mounted) {
+          state = state.copyWith(orbState: OrbState.responding, responseText: prompt);
+        }
+        await _speakAndWait(prompt);
       }
       return;
     }
 
-    // B. Handle Missing Fields Dialog Flows
+    // ---------------------------------------------------------------- //
+    //  C. Missing field dialog (contact name, message, time, etc.)      //
+    // ---------------------------------------------------------------- //
     if (state.missingField != null && state.pendingIntent != null) {
-      final field = state.missingField!;
-      ParsedIntent updatedIntent;
-
-      if (field == 'contactName') {
-        updatedIntent = ParsedIntent(
-          intent: state.pendingIntent!.intent,
-          contactName: text,
-          messageText: state.pendingIntent!.messageText,
-          title: state.pendingIntent!.title,
-          time: state.pendingIntent!.time,
-          date: state.pendingIntent!.date,
-          targetScreen: state.pendingIntent!.targetScreen,
-          simSlot: state.pendingIntent!.simSlot,
-          rawQuery: state.pendingIntent!.rawQuery,
-        );
-      } else if (field == 'messageText') {
-        updatedIntent = ParsedIntent(
-          intent: state.pendingIntent!.intent,
-          contactName: state.pendingIntent!.contactName,
-          messageText: text,
-          title: state.pendingIntent!.title,
-          time: state.pendingIntent!.time,
-          date: state.pendingIntent!.date,
-          targetScreen: state.pendingIntent!.targetScreen,
-          simSlot: state.pendingIntent!.simSlot,
-          rawQuery: state.pendingIntent!.rawQuery,
-        );
-      } else if (field == 'title') {
-        updatedIntent = ParsedIntent(
-          intent: state.pendingIntent!.intent,
-          contactName: state.pendingIntent!.contactName,
-          messageText: state.pendingIntent!.messageText,
-          title: text,
-          time: state.pendingIntent!.time,
-          date: state.pendingIntent!.date,
-          targetScreen: state.pendingIntent!.targetScreen,
-          simSlot: state.pendingIntent!.simSlot,
-          rawQuery: state.pendingIntent!.rawQuery,
-        );
-      } else if (field == 'time') {
-        updatedIntent = ParsedIntent(
-          intent: state.pendingIntent!.intent,
-          contactName: state.pendingIntent!.contactName,
-          messageText: state.pendingIntent!.messageText,
-          title: state.pendingIntent!.title,
-          time: text,
-          date: state.pendingIntent!.date,
-          targetScreen: state.pendingIntent!.targetScreen,
-          simSlot: state.pendingIntent!.simSlot,
-          rawQuery: state.pendingIntent!.rawQuery,
-        );
-      } else if (field == 'simSlot') {
-        // User specified the SIM to use
-        updatedIntent = ParsedIntent(
-          intent: state.pendingIntent!.intent,
-          contactName: state.pendingIntent!.contactName,
-          messageText: state.pendingIntent!.messageText,
-          title: state.pendingIntent!.title,
-          time: state.pendingIntent!.time,
-          date: state.pendingIntent!.date,
-          targetScreen: state.pendingIntent!.targetScreen,
-          simSlot: text.toLowerCase(),
-          rawQuery: state.pendingIntent!.rawQuery,
-        );
-      } else {
-        updatedIntent = state.pendingIntent!;
-      }
-
-      // Check if another field is missing
+      final updatedIntent = _fillMissingField(
+        state.pendingIntent!,
+        state.missingField!,
+        text,
+      );
       await _checkAndProgressIntent(updatedIntent);
       return;
     }
 
-    // C. Fresh intent detection
+    // ---------------------------------------------------------------- //
+    //  D. Fresh intent                                                   //
+    // ---------------------------------------------------------------- //
     final parsed = NlpEngine.parse(text);
+    debugPrint('AssistantController: parsed intent = $parsed');
     await _checkAndProgressIntent(parsed);
   }
 
-  Future<void> _checkAndProgressIntent(ParsedIntent intent) async {
-    final repo = _ref.read(localRepositoryProvider);
+  // ---------------------------------------------------------------------- //
+  //  Multiple contacts disambiguation                                        //
+  // ---------------------------------------------------------------------- //
 
-    switch (intent.intent) {
-      case AssistantIntent.greeting:
-        state = state.copyWith(
-          orbState: OrbState.responding,
-          responseText: 'Hello! How can I help you today?',
-        );
-        await _speakResponse('Hello! How can I help you today?');
-        _logHistory(
-          intent.rawQuery,
-          'Hello! How can I help you today?',
-          'greeting',
-        );
+  Future<void> _handleDisambiguation(String text, String cleanText) async {
+    if (!mounted) return;
+    final settings = _ref.read(settingsControllerProvider);
+    final language = settings.language;
+    final contacts = state.multipleContacts!;
+
+    // Try to match the user's reply against the list of multiple contacts
+    Contact? selected;
+    for (final c in contacts) {
+      if (cleanText.contains(c.name.toLowerCase()) ||
+          c.name.toLowerCase().contains(cleanText)) {
+        selected = c;
         break;
+      }
+    }
 
-      case AssistantIntent.time:
-        final timeStr = DateFormat('hh:mm a').format(DateTime.now());
-        final reply = 'The current time is $timeStr.';
+    if (selected != null) {
+      if (mounted) {
+        state = state.copyWith(clearMultipleContacts: true);
+      }
+      final pending = state.pendingIntent;
+      // Route based on pending intent type
+      if (pending?.intent == AssistantIntent.message) {
+        if (pending?.messageText != null && pending!.messageText!.isNotEmpty) {
+          await _initiateMessage(
+            name: selected.name,
+            phone: selected.phoneNumber,
+            body: pending.messageText!,
+            rawQuery: pending.rawQuery,
+            language: language,
+          );
+        } else {
+          // Ask for message body
+          final ask = _ml(language,
+              en: 'What message would you like to send to ${selected.name}?',
+              ur: '${selected.name} کو کیا میسج بھیجنا ہے؟',
+              ro: '${selected.name} ko kya message bhejna hai?');
+          if (mounted) {
+            state = state.copyWith(
+              orbState: OrbState.responding,
+              responseText: ask,
+              missingField: 'messageText',
+              pendingIntent: ParsedIntent(
+                intent: AssistantIntent.message,
+                contactName: selected.name,
+                messageText: null,
+                targetScreen: selected.phoneNumber,
+                rawQuery: pending?.rawQuery ?? text,
+              ),
+            );
+          }
+          await _speakAndWait(ask);
+          await Future.delayed(const Duration(milliseconds: 300));
+          if (mounted) await _startListening();
+        }
+      } else {
+        await _initiateCall(
+          name: selected.name,
+          phone: selected.phoneNumber,
+          simSlot: state.pendingIntent?.simSlot,
+          rawQuery: state.pendingIntent?.rawQuery ?? text,
+          language: language,
+        );
+      }
+    } else {
+      // Couldn't match
+      final reply = LocalizedResponses.getResponse(language, 'unknownCommand');
+      if (mounted) {
         state = state.copyWith(
           orbState: OrbState.responding,
           responseText: reply,
+          clearMultipleContacts: true,
+          clearPendingIntent: true,
         );
-        await _speakResponse(reply);
+      }
+      await _speakAndWait(reply);
+    }
+  }
+
+  Future<void> _checkAndProgressIntent(ParsedIntent intent) async {
+    if (!mounted) return;
+    final repo = _ref.read(localRepositoryProvider);
+    final settings = _ref.read(settingsControllerProvider);
+    final language = settings.language;
+
+    switch (intent.intent) {
+      // ---------------------------------------------------------------- //
+      case AssistantIntent.greeting:
+        final greeting = LocalizedResponses.getResponse(language, 'greeting1');
+        if (mounted) {
+          state = state.copyWith(orbState: OrbState.responding, responseText: greeting);
+        }
+        await _speakAndWait(greeting);
+        _logHistory(intent.rawQuery, greeting, 'greeting');
+        break;
+
+      // ---------------------------------------------------------------- //
+      case AssistantIntent.time:
+        final timeStr = DateFormat('hh:mm a').format(DateTime.now());
+        final reply = LocalizedResponses.getFormattedResponse(
+            language, 'timeNow', {'time': timeStr});
+        if (mounted) {
+          state = state.copyWith(orbState: OrbState.responding, responseText: reply);
+        }
+        await _speakAndWait(reply);
         _logHistory(intent.rawQuery, reply, 'time');
         break;
 
+      // ---------------------------------------------------------------- //
+      //  CALL — the main workflow                                          //
+      // ---------------------------------------------------------------- //
       case AssistantIntent.call:
-        if (intent.contactName == null || intent.contactName!.isEmpty) {
-          state = state.copyWith(
-            orbState: OrbState.responding,
-            responseText: 'Who do you want to call?',
-            missingField: 'contactName',
-            pendingIntent: intent,
-          );
-          await _speakResponse('Who do you want to call?');
-        } else {
-          // Search contacts in database
-          var contactName = intent.contactName!;
-          
-          // Aggressive cleaning: remove common command words and prefixes
-          contactName = contactName
-              .replaceAll(RegExp(r'(?i)^call\s+'), '')
-              .replaceAll(RegExp(r'(?i)^dial\s+'), '')
-              .replaceAll(RegExp(r'(?i)^to\s+'), '')
-              .replaceAll(RegExp(r'(?i)^phone\s+'), '')
-              .trim();
-          
-          debugPrint('AssistantController: cleaned contact name from "${intent.contactName}" to "$contactName"');
-          debugPrint('AssistantController: searching for contact "$contactName"');
-          var matched = await repo.searchContacts(contactName);
-          debugPrint('AssistantController: found ${matched.length} contacts in initial search');
-          
-          // If not found locally, try importing the phone's real contacts once
-          // (e.g. "call Uzair" where Uzair is a device contact), then re-search.
-          if (matched.isEmpty) {
-            debugPrint('AssistantController: no contacts found, importing device contacts');
-            final imported = await _ref.read(contactsServiceProvider).importDeviceContacts(repo);
-            debugPrint('AssistantController: imported $imported contacts from device');
-            matched = await repo.searchContacts(contactName);
-            debugPrint('AssistantController: found ${matched.length} contacts after import');
-          }
-          
-          // Fallback: try partial matching with individual words
-          if (matched.isEmpty && contactName.contains(' ')) {
-            final words = contactName.split(' ');
-            debugPrint('AssistantController: trying partial match with words: $words');
-            for (final word in words) {
-              if (word.length > 2) { // Skip very short words
-                final partialMatch = await repo.searchContacts(word);
-                if (partialMatch.isNotEmpty) {
-                  matched = partialMatch;
-                  debugPrint('AssistantController: found ${matched.length} contacts with partial match "$word"');
-                  break;
-                }
-              }
-            }
-          }
-          
-          if (matched.isEmpty) {
-            final reply =
-                'I couldn\'t find anyone named ${intent.contactName} in your contacts.';
-            state = state.copyWith(
-              orbState: OrbState.responding,
-              responseText: reply,
-            );
-            await _speakResponse(reply);
-          } else if (matched.length > 1) {
-            // Multiple contacts found
-            final reply =
-                'I found ${matched.length} contacts matching ${intent.contactName}. Which one do you want to call?';
-            state = state.copyWith(
-              orbState: OrbState.responding,
-              responseText: reply,
-              missingField: 'contactName', // will search again with input
-              pendingIntent: intent,
-            );
-            await _speakResponse(reply);
-          } else {
-            // Exactly one contact found
-            final contact = matched.first;
-            
-            // Directly call the contact without confirmation
-            // SIM selection will be handled by accessibility service if needed
-            final prompt = 'Calling ${contact.name}.';
-            state = state.copyWith(
-              orbState: OrbState.responding,
-              responseText: prompt,
-              isConfirming: false,
-              missingField: null,
-              pendingIntent: ParsedIntent(
-                intent: AssistantIntent.call,
-                contactName: contact.name,
-                messageText: contact.phoneNumber,
-                simSlot: intent.simSlot,
-                rawQuery: intent.rawQuery,
-              ),
-            );
-            await _speakResponse(prompt);
-          }
-        }
+        await _handleCallIntent(intent, repo, language);
         break;
 
+      // ---------------------------------------------------------------- //
       case AssistantIntent.message:
-        if (intent.contactName == null || intent.contactName!.isEmpty) {
-          state = state.copyWith(
-            orbState: OrbState.responding,
-            responseText: 'Who do you want to message?',
-            missingField: 'contactName',
-            pendingIntent: intent,
-          );
-          await _speakResponse('Who do you want to message?');
-        } else if (intent.messageText == null || intent.messageText!.isEmpty) {
-          state = state.copyWith(
-            orbState: OrbState.responding,
-            responseText: 'What is the message content?',
-            missingField: 'messageText',
-            pendingIntent: intent,
-          );
-          await _speakResponse('What is the message content?');
-        } else {
-          // Verify contact
-          final matched = await repo.searchContacts(intent.contactName!);
-          if (matched.isEmpty) {
-            final reply =
-                'I couldn\'t find a contact named ${intent.contactName}.';
-            state = state.copyWith(
-              orbState: OrbState.responding,
-              responseText: reply,
-            );
-            await _speakResponse(reply);
-          } else {
-            final contact = matched.first;
-            final prompt =
-                'Do you want to send: "${intent.messageText}" to ${contact.name}?';
-            state = state.copyWith(
-              orbState: OrbState.responding,
-              responseText: prompt,
-              isConfirming: true,
-              missingField: null,
-              pendingIntent: ParsedIntent(
-                intent: AssistantIntent.message,
-                contactName: contact.name,
-                messageText: intent.messageText,
-                targetScreen: contact.phoneNumber, // reuse to store phone
-                rawQuery: intent.rawQuery,
-              ),
-            );
-            await _speakResponse(prompt);
-          }
-        }
+        await _handleMessageIntent(intent, repo, language);
         break;
 
+      // ---------------------------------------------------------------- //
       case AssistantIntent.alarm:
-        if (intent.time == null || intent.time!.isEmpty) {
-          state = state.copyWith(
-            orbState: OrbState.responding,
-            responseText: 'What time should I set the alarm for?',
-            missingField: 'time',
-            pendingIntent: intent,
-          );
-          await _speakResponse('What time should I set the alarm for?');
-        } else {
-          // Use the new AlarmService to set both local and system alarms
-          final hm = _parseTimeToHourMinute(intent.time!);
-          if (hm != null) {
-            final success = await _ref.read(alarmServiceProvider).setAlarm(
-              hour: hm[0],
-              minute: hm[1],
-              label: 'Voice Alarm',
-              repeatDays: 'Everyday',
-              repository: repo,
-            );
-
-            final reply = success
-                ? 'Your alarm has been set for ${intent.time} in both the app and your system clock.'
-                : 'Your alarm has been set for ${intent.time} in the app. Please check your system clock app.';
-            
-            state = state.copyWith(
-              orbState: OrbState.responding,
-              responseText: reply,
-              isConfirming: false,
-              pendingIntent: null,
-              missingField: null,
-            );
-            await _speakResponse(reply);
-            _logHistory(intent.rawQuery, reply, 'alarm');
-          } else {
-            final reply = 'I couldn\'t understand the time. Please say it again, like "8 PM" or "7:30 AM".';
-            state = state.copyWith(
-              orbState: OrbState.responding,
-              responseText: reply,
-              missingField: 'time',
-              pendingIntent: intent,
-            );
-            await _speakResponse(reply);
-          }
-        }
+        await _handleAlarmIntent(intent, repo, language);
         break;
 
+      // ---------------------------------------------------------------- //
       case AssistantIntent.reminder:
-        if (intent.title == null || intent.title!.isEmpty) {
-          state = state.copyWith(
-            orbState: OrbState.responding,
-            responseText: 'What should I remind you about?',
-            missingField: 'title',
-            pendingIntent: intent,
-          );
-          await _speakResponse('What should I remind you about?');
-        } else if (intent.time == null || intent.time!.isEmpty) {
-          state = state.copyWith(
-            orbState: OrbState.responding,
-            responseText: 'When should I remind you?',
-            missingField: 'time',
-            pendingIntent: intent,
-          );
-          await _speakResponse('When should I remind you?');
-        } else {
-          // Everything ready
-          final prompt =
-              'Do you want me to set a reminder for "${intent.title}" at ${intent.time}?';
-          state = state.copyWith(
-            orbState: OrbState.responding,
-            responseText: prompt,
-            isConfirming: true,
-            missingField: null,
-            pendingIntent: intent,
-          );
-          await _speakResponse(prompt);
-        }
+        await _handleReminderIntent(intent, repo, language);
         break;
 
+      // ---------------------------------------------------------------- //
       case AssistantIntent.calendarSchedule:
-        final events = await repo.getEvents();
-        if (events.isEmpty) {
-          final reply = 'You have no events scheduled for today.';
-          state = state.copyWith(
-            orbState: OrbState.responding,
-            responseText: reply,
-          );
-          await _speakResponse(reply);
-        } else {
-          final buffer = StringBuffer('Today\'s schedule:\n');
-          for (var ev in events) {
-            final timeStr = DateFormat('hh:mm a').format(ev.dateTime);
-            buffer.write('- ${ev.title} at $timeStr\n');
-          }
-          final reply = buffer.toString().trim();
-          state = state.copyWith(
-            orbState: OrbState.responding,
-            responseText: reply,
-          );
-          await _speakResponse(reply);
-        }
-        _logHistory(intent.rawQuery, 'Showed schedule', 'calendar');
+        await _handleCalendarSchedule(repo, intent, language);
         break;
 
       case AssistantIntent.addEvent:
-        if (intent.title == null || intent.title!.isEmpty) {
-          state = state.copyWith(
-            orbState: OrbState.responding,
-            responseText: 'What is the meeting title?',
-            missingField: 'title',
-            pendingIntent: intent,
-          );
-          await _speakResponse('What is the meeting title?');
-        } else if (intent.time == null || intent.time!.isEmpty) {
-          state = state.copyWith(
-            orbState: OrbState.responding,
-            responseText: 'What time is the meeting?',
-            missingField: 'time',
-            pendingIntent: intent,
-          );
-          await _speakResponse('What time is the meeting?');
-        } else {
-          final prompt =
-              'Add meeting "${intent.title}" for tomorrow at ${intent.time}?';
-          state = state.copyWith(
-            orbState: OrbState.responding,
-            responseText: prompt,
-            isConfirming: true,
-            missingField: null,
-            pendingIntent: intent,
-          );
-          await _speakResponse(prompt);
-        }
+        await _handleAddEvent(intent, repo, language);
         break;
 
       case AssistantIntent.deleteEvent:
-        final prompt = 'Do you want to delete your events?';
-        state = state.copyWith(
-          orbState: OrbState.responding,
-          responseText: prompt,
-          isConfirming: true,
-          pendingIntent: intent,
-        );
-        await _speakResponse(prompt);
+        await _handleDeleteEvent(intent, repo, language);
         break;
 
       case AssistantIntent.navigate:
-        final screen = intent.targetScreen;
-        String response = 'Opening $screen.';
-        String route = '';
-
-        if (screen == 'messages') {
-          route = AppRouter.messaging;
-        } else if (screen == 'reminders') {
-          route = AppRouter.reminders;
-        } else if (screen == 'alarms') {
-          route = AppRouter.alarms;
-        } else if (screen == 'calendar') {
-          route = AppRouter.calendar;
-        } else if (screen == 'settings') {
-          route = AppRouter.settings;
-        } else if (screen == 'contacts') {
-          route = AppRouter.contacts;
-        }
-
-        state = state.copyWith(
-          orbState: OrbState.responding,
-          responseText: response,
-          navigationTarget: route.isNotEmpty ? route : null,
-        );
-        await _speakResponse(response);
-        _logHistory(intent.rawQuery, response, 'navigate');
+        await _handleNavigation(intent, language);
         break;
 
       case AssistantIntent.nextMeeting:
-        final events = await repo.getEvents();
-        final upcoming = events
-            .where((e) => e.dateTime.isAfter(DateTime.now()))
-            .toList();
-        if (upcoming.isEmpty) {
-          const reply = 'You do not have any upcoming meetings.';
-          state = state.copyWith(
-            orbState: OrbState.responding,
-            responseText: reply,
-          );
-          await _speakResponse(reply);
-        } else {
-          final ev = upcoming.first;
-          final timeStr = DateFormat('hh:mm a').format(ev.dateTime);
-          final reply =
-              'Your next meeting is "${ev.title}" scheduled at $timeStr.';
-          state = state.copyWith(
-            orbState: OrbState.responding,
-            responseText: reply,
-          );
-          await _speakResponse(reply);
-        }
+        await _handleNextMeeting(repo, intent, language);
         break;
 
       case AssistantIntent.readMessages:
-        final convs = await repo.getConversations();
-        if (convs.isEmpty) {
-          const reply = 'You have no messages.';
-          state = state.copyWith(
-            orbState: OrbState.responding,
-            responseText: reply,
-          );
-          await _speakResponse(reply);
-        } else {
-          final reply =
-              'You have ${convs.length} recent chats. The last message is from ${convs.first.contactName}: "${convs.first.lastMessage}".';
-          state = state.copyWith(
-            orbState: OrbState.responding,
-            responseText: reply,
-          );
-          await _speakResponse(reply);
-        }
+        await _handleReadMessages(repo, intent, language);
         break;
 
       case AssistantIntent.replyMessage:
-        // Mock active conversation reply
-        state = state.copyWith(
-          orbState: OrbState.responding,
-          responseText: 'Who do you want to send a reply to?',
-          missingField: 'contactName',
-          pendingIntent: ParsedIntent(
-            intent: AssistantIntent.message,
-            rawQuery: intent.rawQuery,
-          ),
-        );
-        await _speakResponse('Who do you want to send a reply to?');
+        final askContact = LocalizedResponses.getResponse(language, 'askContactName');
+        if (mounted) {
+          state = state.copyWith(
+            orbState: OrbState.responding,
+            responseText: askContact,
+            missingField: 'contactName',
+            pendingIntent: ParsedIntent(
+              intent: AssistantIntent.message,
+              rawQuery: intent.rawQuery,
+            ),
+          );
+        }
+        await _speakAndWait(askContact);
         break;
 
+      // ---------------------------------------------------------------- //
       case AssistantIntent.unknown:
-        const reply =
-            'I\'m sorry, I didn\'t catch that. Could you please try again?';
-        state = state.copyWith(
-          orbState: OrbState.responding,
-          responseText: reply,
-        );
-        await _speakResponse(reply);
+        final reply = LocalizedResponses.getResponse(language, 'unknownCommand');
+        if (mounted) {
+          state = state.copyWith(orbState: OrbState.responding, responseText: reply);
+        }
+        await _speakAndWait(reply);
+        await Future.delayed(const Duration(milliseconds: 300));
+        if (mounted) await _startListening();
         break;
     }
   }
 
+  // ---------------------------------------------------------------------- //
+  //  CALL INTENT HANDLER (fixed)                                             //
+  // ---------------------------------------------------------------------- //
+
+  Future<void> _handleCallIntent(
+    ParsedIntent intent,
+    dynamic repo,
+    String language,
+  ) async {
+    if (!mounted) return;
+
+    // Step 1: Ensure we have a contact name
+    if (intent.contactName == null || intent.contactName!.trim().isEmpty) {
+      final askContact = LocalizedResponses.getResponse(language, 'askContactName');
+      if (mounted) {
+        state = state.copyWith(
+          orbState: OrbState.responding,
+          responseText: askContact,
+          missingField: 'contactName',
+          pendingIntent: intent,
+        );
+      }
+      await _speakAndWait(askContact);
+      await Future.delayed(const Duration(milliseconds: 300));
+      if (mounted) await _startListening();
+      return;
+    }
+
+    // Step 2: Check contacts permission
+    final hasContacts = await _ref
+        .read(permissionServiceProvider)
+        .ensureContactsPermission();
+    if (!hasContacts) return;
+
+    final contactName = intent.contactName!.trim();
+    debugPrint('AssistantController: looking up contact "$contactName"');
+
+    // Step 3: Search — try fuzzy first, then SQL LIKE, then import+retry
+    var matched = await repo.fuzzySearchContacts(contactName);
+
+    if (matched.isEmpty) {
+      debugPrint('AssistantController: fuzzy found nothing, trying SQL LIKE');
+      matched = await repo.searchContacts(contactName);
+    }
+
+    if (matched.isEmpty) {
+      debugPrint('AssistantController: no results, importing device contacts');
+      await _ref.read(contactsServiceProvider).importDeviceContacts(repo);
+      matched = await repo.fuzzySearchContacts(contactName);
+      if (matched.isEmpty) {
+        matched = await repo.searchContacts(contactName);
+      }
+    }
+
+    // Step 4: No contact found
+    if (matched.isEmpty) {
+      final reply = LocalizedResponses.getFormattedResponse(
+          language, 'callFailed', {'name': contactName});
+      if (mounted) {
+        state = state.copyWith(
+          orbState: OrbState.responding,
+          responseText: reply,
+          missingField: 'contactName',
+          pendingIntent: intent,
+        );
+      }
+      await _speakAndWait(reply);
+      await Future.delayed(const Duration(milliseconds: 300));
+      if (mounted) await _startListening();
+      return;
+    }
+
+    // Step 5: Multiple contacts — ask which one
+    if (matched.length > 1) {
+      final names = matched.map((c) => c.name).join(', ');
+      final reply =
+          'I found ${matched.length} contacts: $names. Which one would you like to call?';
+      if (mounted) {
+        state = state.copyWith(
+          orbState: OrbState.responding,
+          responseText: reply,
+          multipleContacts: matched,
+          pendingIntent: intent,
+        );
+      }
+      await _speakAndWait(reply);
+      // Start listening again to hear the disambiguation answer
+      await Future.delayed(const Duration(milliseconds: 300));
+      if (mounted) await _startListening();
+      return;
+    }
+
+    // Step 6: Exactly one contact found — call immediately
+    final contact = matched.first;
+    await _initiateCall(
+      name: contact.name,
+      phone: contact.phoneNumber,
+      simSlot: intent.simSlot,
+      rawQuery: intent.rawQuery,
+      language: language,
+    );
+  }
+
+  /// Places the actual phone call after contact has been resolved.
+  ///
+  /// Fix: previously this was only reached via [_executeIntent] which required
+  /// the user to say "yes" (isConfirming=true). Now it is called directly
+  /// after finding exactly one contact, making the flow truly hands-free.
+  Future<void> _initiateCall({
+    required String name,
+    required String phone,
+    required String language,
+    required String rawQuery,
+    String? simSlot,
+  }) async {
+    if (!mounted) return;
+
+    // Speak "Calling {name}" — user hears this while dialer opens
+    final callingMsg = LocalizedResponses.getFormattedResponse(
+        language, 'callConfirm', {'name': name});
+
+    if (mounted) {
+      state = state.copyWith(
+        orbState: OrbState.responding,
+        responseText: callingMsg,
+        isConfirming: false,
+        clearPendingIntent: true,
+        clearMissingField: true,
+        clearMultipleContacts: true,
+      );
+    }
+
+    // Speak and await — so TTS finishes before the dialer opens
+    await _speakAndWait(callingMsg);
+
+    // Check phone permission
+    final hasPhone = await _ref
+        .read(permissionServiceProvider)
+        .ensureCallPermission();
+    if (!hasPhone) return;
+
+    // SIM selection for accessibility service
+    if (simSlot != null) {
+      await _ref.read(phoneServiceProvider).setTargetSim(simSlot);
+    }
+
+    int? simSlotIndex;
+    if (simSlot != null) {
+      simSlotIndex =
+          _ref.read(phoneServiceProvider).getSimSlotFromName(simSlot);
+    }
+
+    debugPrint(
+        'AssistantController: placing call to $name ($phone) on SIM $simSlot');
+
+    // Place the call
+    final callLaunched = await _ref
+        .read(phoneServiceProvider)
+        .makePhoneCall(phoneNumber: phone, simSlot: simSlotIndex);
+
+    debugPrint('AssistantController: callLaunched=$callLaunched');
+
+    final finalResponse = callLaunched
+        ? LocalizedResponses.getFormattedResponse(
+            language, 'callSuccess', {'name': name})
+        : LocalizedResponses.getFormattedResponse(
+            language, 'callFailed', {'name': name});
+
+    if (mounted) {
+      state = state.copyWith(
+        orbState: OrbState.responding,
+        responseText: finalResponse,
+      );
+    }
+
+    if (!callLaunched) {
+      await _speakAndWait(finalResponse);
+    }
+
+    _logHistory(rawQuery, finalResponse, 'call');
+
+    // Return to idle after a brief delay
+    await Future.delayed(const Duration(seconds: 3));
+    if (mounted && state.orbState == OrbState.responding) {
+      state = state.copyWith(orbState: OrbState.idle);
+    }
+  }
+
+  // ---------------------------------------------------------------------- //
+  //  Execute confirmed intents                                               //
+  // ---------------------------------------------------------------------- //
+
   Future<void> _executeIntent(ParsedIntent intent) async {
+    if (!mounted) return;
     final repo = _ref.read(localRepositoryProvider);
+    final settings = _ref.read(settingsControllerProvider);
+    final language = settings.language;
 
     switch (intent.intent) {
       case AssistantIntent.call:
-        // Intent uses messageText as placeholder for phoneNumber
+        // messageText holds the phone number (set during contact resolution)
         final name = intent.contactName ?? 'Someone';
         final phone = intent.messageText ?? '';
-        final simName = intent.simSlot;
-        final response = simName != null ? 'Calling $name from $simName.' : 'Calling $name.';
-
-        // Debug logging
-        print('AssistantController: Attempting to call $name with phone: "$phone" on SIM: "$simName"');
-
-        // Set target SIM for accessibility service if specified
-        if (simName != null) {
-          await _ref.read(phoneServiceProvider).setTargetSim(simName);
-        }
-
-        // Get SIM slot index from SIM name
-        int? simSlot;
-        if (simName != null) {
-          simSlot = _ref.read(phoneServiceProvider).getSimSlotFromName(simName);
-          print('AssistantController: Mapped SIM name "$simName" to slot: $simSlot');
-        }
-
-        // Make a real phone call using the native dialer
-        bool callLaunched = false;
-        if (phone.isNotEmpty) {
-          callLaunched = await _ref
-              .read(phoneServiceProvider)
-              .makePhoneCall(phoneNumber: phone, simSlot: simSlot);
-          print('AssistantController: Call launched: $callLaunched');
-        } else {
-          print('AssistantController: Phone number is empty!');
-        }
-
-        final finalResponse = callLaunched
-            ? response
-            : 'I couldn\'t launch the phone dialer for $name. Please check permissions.';
-        
-        state = state.copyWith(
-          orbState: OrbState.responding,
-          responseText: finalResponse,
-          isConfirming: false,
-          pendingIntent: null,
+        await _initiateCall(
+          name: name,
+          phone: phone,
+          simSlot: intent.simSlot,
+          rawQuery: intent.rawQuery,
+          language: language,
         );
-
-        await _speakResponse(finalResponse);
-        _logHistory(intent.rawQuery, finalResponse, 'call');
         break;
 
       case AssistantIntent.message:
-        // contactName = name, messageText = body, targetScreen = phone
         final name = intent.contactName ?? '';
         final body = intent.messageText ?? '';
         final phone = intent.targetScreen ?? '';
@@ -783,10 +771,8 @@ class AssistantController extends StateNotifier<AssistantState> {
           isRead: true,
           createdAt: DateTime.now(),
         );
-
         await repo.insertMessage(msg);
 
-        // Send a REAL SMS via the phone's telephony.
         bool sent = false;
         if (phone.isNotEmpty && phone != 'user') {
           sent = await _ref
@@ -795,26 +781,27 @@ class AssistantController extends StateNotifier<AssistantState> {
         }
 
         final response = sent
-            ? 'Message sent to $name.'
-            : 'I saved the message, but couldn\'t send the SMS to $name. Please check permissions.';
-        state = state.copyWith(
-          orbState: OrbState.responding,
-          responseText: response,
-          isConfirming: false,
-          pendingIntent: null,
-        );
-        await _speakResponse(response);
+            ? LocalizedResponses.getFormattedResponse(
+                language, 'messageSent', {'name': name})
+            : LocalizedResponses.getResponse(language, 'messageFailed');
+
+        if (mounted) {
+          state = state.copyWith(
+            orbState: OrbState.responding,
+            responseText: response,
+            isConfirming: false,
+            clearPendingIntent: true,
+          );
+        }
+        await _speakAndWait(response);
         _logHistory(intent.rawQuery, response, 'message');
         break;
 
       case AssistantIntent.reminder:
-        // Add reminder
         final reminder = Reminder(
           id: const Uuid().v4(),
-          title: intent.title!,
-          dateTime: DateTime.now().add(
-            const Duration(days: 1),
-          ), // default tomorrow
+          title: intent.title ?? 'Reminder',
+          dateTime: DateTime.now().add(const Duration(days: 1)),
           category: 'generic',
           repeatType: 'none',
           isCompleted: false,
@@ -822,19 +809,25 @@ class AssistantController extends StateNotifier<AssistantState> {
         );
         await repo.insertReminder(reminder);
 
-        final response = 'Your reminder for "${intent.title}" has been set.';
-        state = state.copyWith(
-          orbState: OrbState.responding,
-          responseText: response,
-          isConfirming: false,
-          pendingIntent: null,
-        );
-        await _speakResponse(response);
+        final response = LocalizedResponses.getFormattedResponse(
+            language, 'reminderSet', {
+          'title': intent.title ?? '',
+          'time': intent.time ?? '',
+          'date': intent.date ?? '',
+        });
+        if (mounted) {
+          state = state.copyWith(
+            orbState: OrbState.responding,
+            responseText: response,
+            isConfirming: false,
+            clearPendingIntent: true,
+          );
+        }
+        await _speakAndWait(response);
         _logHistory(intent.rawQuery, response, 'reminder');
         break;
 
       case AssistantIntent.addEvent:
-        // Compute the event start: tomorrow (or today) at the spoken time.
         final hm = _parseTimeToHourMinute(intent.time ?? '');
         final base = (intent.date == 'today')
             ? DateTime.now()
@@ -846,43 +839,51 @@ class AssistantController extends StateNotifier<AssistantState> {
 
         final ev = CalendarEvent(
           id: const Uuid().v4(),
-          title: intent.title!,
+          title: intent.title ?? 'Event',
           dateTime: start,
           durationMinutes: 60,
           createdAt: DateTime.now(),
         );
         await repo.insertEvent(ev);
+        await _ref.read(phoneServiceProvider).addCalendarEvent(
+              title: intent.title ?? 'Event',
+              start: start,
+              end: end,
+            );
 
-        // Add it to the phone's REAL calendar too.
-        await _ref
-            .read(phoneServiceProvider)
-            .addCalendarEvent(title: intent.title!, start: start, end: end);
-
-        final response = 'Meeting "${intent.title}" added to your calendar.';
-        state = state.copyWith(
-          orbState: OrbState.responding,
-          responseText: response,
-          isConfirming: false,
-          pendingIntent: null,
-        );
-        await _speakResponse(response);
+        final response = LocalizedResponses.getFormattedResponse(
+            language, 'eventAdded', {
+          'title': intent.title ?? '',
+          'time': intent.time ?? '',
+          'date': intent.date ?? '',
+        });
+        if (mounted) {
+          state = state.copyWith(
+            orbState: OrbState.responding,
+            responseText: response,
+            isConfirming: false,
+            clearPendingIntent: true,
+          );
+        }
+        await _speakAndWait(response);
         _logHistory(intent.rawQuery, response, 'calendar');
         break;
 
       case AssistantIntent.deleteEvent:
-        // Mock deleting Friday event or similar
         final events = await repo.getEvents();
-        if (events.isNotEmpty) {
-          await repo.deleteEvent(events.first.id);
+        if (events.isNotEmpty) await repo.deleteEvent(events.first.id);
+
+        final response = LocalizedResponses.getFormattedResponse(
+            language, 'eventDeleted', {'date': intent.date ?? ''});
+        if (mounted) {
+          state = state.copyWith(
+            orbState: OrbState.responding,
+            responseText: response,
+            isConfirming: false,
+            clearPendingIntent: true,
+          );
         }
-        const response = 'Event deleted successfully.';
-        state = state.copyWith(
-          orbState: OrbState.responding,
-          responseText: response,
-          isConfirming: false,
-          pendingIntent: null,
-        );
-        await _speakResponse(response);
+        await _speakAndWait(response);
         break;
 
       default:
@@ -890,18 +891,640 @@ class AssistantController extends StateNotifier<AssistantState> {
     }
   }
 
-  Future<void> _speakResponse(String text) async {
-    final tts = _ref.read(ttsServiceProvider);
-    await tts.speak(text);
-    // After speaking finishes or during, let orb change to idle after timeout
-    Future.delayed(const Duration(seconds: 4), () {
-      if (mounted && state.orbState == OrbState.responding) {
-        state = state.copyWith(orbState: OrbState.idle);
+  // ---------------------------------------------------------------------- //
+  //  Other intent handlers                                                   //
+  // ---------------------------------------------------------------------- //
+
+  Future<void> _handleMessageIntent(
+    ParsedIntent intent,
+    dynamic repo,
+    String language,
+  ) async {
+    if (!mounted) return;
+
+    // ── Step 1: Need a contact name ──────────────────────────────────────────
+    if (intent.contactName == null || intent.contactName!.trim().isEmpty) {
+      final ask = _ml(language,
+          en: 'Who would you like to message? Please say the contact name.',
+          ur: 'آپ کس کو میسج کرنا چاہتے ہیں؟ رابطے کا نام بتائیں۔',
+          ro: 'Kisko message karna chahte hain? Contact ka naam batayein.');
+      if (mounted) {
+        state = state.copyWith(
+          orbState: OrbState.responding,
+          responseText: ask,
+          missingField: 'contactName',
+          pendingIntent: intent,
+        );
       }
-    });
+      await _speakAndWait(ask);
+      await Future.delayed(const Duration(milliseconds: 300));
+      if (mounted) await _startListening();
+      return;
+    }
+
+    // ── Step 2: Check contacts permission ────────────────────────────────────
+    final hasContacts = await _ref
+        .read(permissionServiceProvider)
+        .ensureContactsPermission();
+    if (!hasContacts) return;
+
+    final contactName = intent.contactName!.trim();
+    debugPrint('AssistantController(message): searching "$contactName"');
+
+    // ── Step 3: Fuzzy contact lookup ─────────────────────────────────────────
+    var matched = await repo.fuzzySearchContacts(contactName);
+    if (matched.isEmpty) matched = await repo.searchContacts(contactName);
+    if (matched.isEmpty) {
+      await _ref.read(contactsServiceProvider).importDeviceContacts(repo);
+      matched = await repo.fuzzySearchContacts(contactName);
+      if (matched.isEmpty) matched = await repo.searchContacts(contactName);
+    }
+
+    // ── Step 4: Contact not found ────────────────────────────────────────────
+    if (matched.isEmpty) {
+      final reply = _ml(language,
+          en: 'I couldn\'t find a contact named $contactName. Please say the name again.',
+          ur: '$contactName نام کا رابطہ نہیں ملا۔ دوبارہ نام بتائیں۔',
+          ro: '$contactName naam ka contact nahi mila. Dobara naam batayein.');
+      if (mounted) {
+        state = state.copyWith(
+          orbState: OrbState.responding,
+          responseText: reply,
+          missingField: 'contactName',
+          pendingIntent: intent,
+        );
+      }
+      await _speakAndWait(reply);
+      await Future.delayed(const Duration(milliseconds: 300));
+      if (mounted) await _startListening();
+      return;
+    }
+
+    // ── Step 5: Multiple contacts disambiguation ──────────────────────────────
+    if (matched.length > 1) {
+      final names = matched.map((c) => c.name).join(', ');
+      final reply = _ml(language,
+          en: 'I found ${matched.length} contacts: $names. Which one would you like to message?',
+          ur: '${matched.length} رابطے ملے: $names۔ کس کو میسج کریں؟',
+          ro: '${matched.length} contacts mile: $names. Kisko message karein?');
+      if (mounted) {
+        state = state.copyWith(
+          orbState: OrbState.responding,
+          responseText: reply,
+          multipleContacts: matched,
+          pendingIntent: ParsedIntent(
+            intent: AssistantIntent.message,
+            contactName: contactName,
+            messageText: intent.messageText,
+            rawQuery: intent.rawQuery,
+          ),
+        );
+      }
+      await _speakAndWait(reply);
+      await Future.delayed(const Duration(milliseconds: 300));
+      if (mounted) await _startListening();
+      return;
+    }
+
+    final contact = matched.first;
+
+    // ── Step 6: Need the message body ─────────────────────────────────────────
+    if (intent.messageText == null || intent.messageText!.trim().isEmpty) {
+      final ask = _ml(language,
+          en: 'What message would you like to send to ${contact.name}?',
+          ur: '${contact.name} کو کیا میسج بھیجنا ہے؟',
+          ro: '${contact.name} ko kya message bhejna hai?');
+      if (mounted) {
+        state = state.copyWith(
+          orbState: OrbState.responding,
+          responseText: ask,
+          missingField: 'messageText',
+          pendingIntent: ParsedIntent(
+            intent: AssistantIntent.message,
+            contactName: contact.name,
+            messageText: null,
+            targetScreen: contact.phoneNumber,
+            rawQuery: intent.rawQuery,
+          ),
+        );
+      }
+      await _speakAndWait(ask);
+      await Future.delayed(const Duration(milliseconds: 300));
+      if (mounted) await _startListening();
+      return;
+    }
+
+    // ── Step 7: Send SMS directly ─────────────────────────────────────────────
+    await _initiateMessage(
+      name: contact.name,
+      phone: contact.phoneNumber,
+      body: intent.messageText!.trim(),
+      rawQuery: intent.rawQuery,
+      language: language,
+    );
   }
 
-  Future<void> _logHistory(String query, String response, String intent) async {
+  /// Sends the SMS and gives spoken feedback — no confirmation required.
+  Future<void> _initiateMessage({
+    required String name,
+    required String phone,
+    required String body,
+    required String rawQuery,
+    required String language,
+  }) async {
+    if (!mounted) return;
+
+    // Check SMS permission
+    final hasSms = await _ref
+        .read(permissionServiceProvider)
+        .ensureSmsPermission();
+    if (!hasSms) return;
+
+    final sendingMsg = _ml(language,
+        en: 'Sending message to $name.',
+        ur: '$name کو میسج بھیج رہا ہوں۔',
+        ro: '$name ko message bhej raha hoon.');
+
+    if (mounted) {
+      state = state.copyWith(
+        orbState: OrbState.responding,
+        responseText: sendingMsg,
+        isConfirming: false,
+        clearPendingIntent: true,
+        clearMissingField: true,
+        clearMultipleContacts: true,
+      );
+    }
+    await _speakAndWait(sendingMsg);
+
+    debugPrint('AssistantController(message): sending "$body" to $name ($phone)');
+
+    final sent = await _ref
+        .read(phoneServiceProvider)
+        .sendSms(phoneNumber: phone, message: body);
+
+    debugPrint('AssistantController(message): sent=$sent');
+
+    // Also store in local DB
+    final repo = _ref.read(localRepositoryProvider);
+    final msg = Message(
+      id: const Uuid().v4(),
+      conversationId: 'conv_$name',
+      senderPhone: 'user',
+      receiverPhone: phone,
+      content: body,
+      isRead: true,
+      createdAt: DateTime.now(),
+    );
+    await repo.insertMessage(msg);
+
+    final finalResponse = sent
+        ? _ml(language,
+            en: 'Message sent to $name successfully.',
+            ur: '$name کو میسج کامیابی سے بھیج دیا گیا۔',
+            ro: '$name ko message successfully bhej diya.')
+        : _ml(language,
+            en: 'Sorry, I couldn\'t send the message to $name. Please check your SMS settings.',
+            ur: 'معذرت، $name کو میسج نہیں بھیجا جا سکا۔',
+            ro: 'Sorry, $name ko message nahi bhej saka.');
+
+    if (mounted) {
+      state = state.copyWith(
+        orbState: OrbState.responding,
+        responseText: finalResponse,
+      );
+    }
+
+    if (!sent) await _speakAndWait(finalResponse);
+
+    _logHistory(rawQuery, finalResponse, 'message');
+
+    await Future.delayed(const Duration(seconds: 3));
+    if (mounted && state.orbState == OrbState.responding) {
+      state = state.copyWith(orbState: OrbState.idle);
+    }
+  }
+
+  /// Helper: returns the string for the current app language.
+  String _ml(String lang, {required String en, required String ur, required String ro}) {
+    if (lang == 'ur') return ur;
+    if (lang == 'roman_ur') return ro;
+    return en;
+  }
+
+  Future<void> _handleAlarmIntent(
+    ParsedIntent intent,
+    dynamic repo,
+    String language,
+  ) async {
+    if (!mounted) return;
+    if (intent.time == null || intent.time!.isEmpty) {
+      final askTime = LocalizedResponses.getResponse(language, 'askTime');
+      if (mounted) {
+        state = state.copyWith(
+          orbState: OrbState.responding,
+          responseText: askTime,
+          missingField: 'time',
+          pendingIntent: intent,
+        );
+      }
+      await _speakAndWait(askTime);
+      return;
+    }
+
+    final hm = _parseTimeToHourMinute(intent.time!);
+    if (hm != null) {
+      await _ref.read(alarmServiceProvider).setAlarm(
+            hour: hm[0],
+            minute: hm[1],
+            label: 'Voice Alarm',
+            repeatDays: 'Everyday',
+            repository: repo,
+          );
+      final reply = LocalizedResponses.getFormattedResponse(
+          language, 'alarmSet', {'time': intent.time!, 'date': ''});
+      if (mounted) {
+        state = state.copyWith(
+          orbState: OrbState.responding,
+          responseText: reply,
+          isConfirming: false,
+          clearPendingIntent: true,
+          clearMissingField: true,
+        );
+      }
+      await _speakAndWait(reply);
+      _logHistory(intent.rawQuery, reply, 'alarm');
+    } else {
+      const reply =
+          'I couldn\'t understand the time. Please say it like "8 PM" or "7:30 AM".';
+      if (mounted) {
+        state = state.copyWith(
+          orbState: OrbState.responding,
+          responseText: reply,
+          missingField: 'time',
+          pendingIntent: intent,
+        );
+      }
+      await _speakAndWait(reply);
+    }
+  }
+
+  Future<void> _handleReminderIntent(
+    ParsedIntent intent,
+    dynamic repo,
+    String language,
+  ) async {
+    if (!mounted) return;
+    if (intent.title == null || intent.title!.isEmpty) {
+      final askTitle = LocalizedResponses.getResponse(language, 'askTitle');
+      if (mounted) {
+        state = state.copyWith(
+          orbState: OrbState.responding,
+          responseText: askTitle,
+          missingField: 'title',
+          pendingIntent: intent,
+        );
+      }
+      await _speakAndWait(askTitle);
+      return;
+    }
+    if (intent.time == null || intent.time!.isEmpty) {
+      final askTime = LocalizedResponses.getResponse(language, 'askTime');
+      if (mounted) {
+        state = state.copyWith(
+          orbState: OrbState.responding,
+          responseText: askTime,
+          missingField: 'time',
+          pendingIntent: intent,
+        );
+      }
+      await _speakAndWait(askTime);
+      return;
+    }
+
+    final prompt = LocalizedResponses.getFormattedResponse(
+        language, 'reminderSet', {
+      'title': intent.title!,
+      'time': intent.time!,
+      'date': intent.date ?? '',
+    });
+    if (mounted) {
+      state = state.copyWith(
+        orbState: OrbState.responding,
+        responseText: prompt,
+        isConfirming: true,
+        clearMissingField: true,
+        pendingIntent: intent,
+      );
+    }
+    await _speakAndWait(prompt);
+    await Future.delayed(const Duration(milliseconds: 300));
+    if (mounted) await _startListening();
+  }
+
+  Future<void> _handleCalendarSchedule(
+    dynamic repo,
+    ParsedIntent intent,
+    String language,
+  ) async {
+    if (!mounted) return;
+    final events = await repo.getEvents();
+    if (events.isEmpty) {
+      final reply = LocalizedResponses.getResponse(language, 'noEvents');
+      if (mounted) {
+        state = state.copyWith(orbState: OrbState.responding, responseText: reply);
+      }
+      await _speakAndWait(reply);
+    } else {
+      final buffer = StringBuffer();
+      buffer.write(LocalizedResponses.getFormattedResponse(
+          language, 'scheduleToday', {'count': events.length.toString()}));
+      for (final ev in events) {
+        final timeStr = DateFormat('hh:mm a').format(ev.dateTime);
+        buffer.write(' ${ev.title} at $timeStr.');
+      }
+      final reply = buffer.toString();
+      if (mounted) {
+        state = state.copyWith(orbState: OrbState.responding, responseText: reply);
+      }
+      await _speakAndWait(reply);
+    }
+    _logHistory(intent.rawQuery, 'Showed schedule', 'calendar');
+  }
+
+  Future<void> _handleAddEvent(
+    ParsedIntent intent,
+    dynamic repo,
+    String language,
+  ) async {
+    if (!mounted) return;
+    if (intent.title == null || intent.title!.isEmpty) {
+      final askTitle = LocalizedResponses.getResponse(language, 'askTitle');
+      if (mounted) {
+        state = state.copyWith(
+          orbState: OrbState.responding,
+          responseText: askTitle,
+          missingField: 'title',
+          pendingIntent: intent,
+        );
+      }
+      await _speakAndWait(askTitle);
+      return;
+    }
+    if (intent.time == null || intent.time!.isEmpty) {
+      final askTime = LocalizedResponses.getResponse(language, 'askTime');
+      if (mounted) {
+        state = state.copyWith(
+          orbState: OrbState.responding,
+          responseText: askTime,
+          missingField: 'time',
+          pendingIntent: intent,
+        );
+      }
+      await _speakAndWait(askTime);
+      return;
+    }
+
+    final prompt = LocalizedResponses.getFormattedResponse(
+        language, 'eventAdded', {
+      'title': intent.title!,
+      'time': intent.time!,
+      'date': intent.date ?? '',
+    });
+    if (mounted) {
+      state = state.copyWith(
+        orbState: OrbState.responding,
+        responseText: prompt,
+        isConfirming: true,
+        clearMissingField: true,
+        pendingIntent: intent,
+      );
+    }
+    await _speakAndWait(prompt);
+    await Future.delayed(const Duration(milliseconds: 300));
+    if (mounted) await _startListening();
+  }
+
+  Future<void> _handleDeleteEvent(
+    ParsedIntent intent,
+    dynamic repo,
+    String language,
+  ) async {
+    if (!mounted) return;
+    const prompt = 'Do you want to delete your events?';
+    if (mounted) {
+      state = state.copyWith(
+        orbState: OrbState.responding,
+        responseText: prompt,
+        isConfirming: true,
+        pendingIntent: intent,
+      );
+    }
+    await _speakAndWait(prompt);
+    await Future.delayed(const Duration(milliseconds: 300));
+    if (mounted) await _startListening();
+  }
+
+  Future<void> _handleNavigation(ParsedIntent intent, String language) async {
+    if (!mounted) return;
+    final screen = intent.targetScreen;
+    final response = LocalizedResponses.getFormattedResponse(
+        language, 'navigation', {'screen': screen ?? ''});
+    String route = '';
+
+    switch (screen) {
+      case 'messages':
+        route = AppRouter.messaging;
+        break;
+      case 'reminders':
+        route = AppRouter.reminders;
+        break;
+      case 'alarms':
+        route = AppRouter.alarms;
+        break;
+      case 'calendar':
+        route = AppRouter.calendar;
+        break;
+      case 'settings':
+        route = AppRouter.settings;
+        break;
+      case 'contacts':
+        route = AppRouter.contacts;
+        break;
+    }
+
+    if (mounted) {
+      state = state.copyWith(
+        orbState: OrbState.responding,
+        responseText: response,
+        navigationTarget: route.isNotEmpty ? route : null,
+      );
+    }
+    await _speakAndWait(response);
+    _logHistory(intent.rawQuery, response, 'navigate');
+  }
+
+  Future<void> _handleNextMeeting(
+    dynamic repo,
+    ParsedIntent intent,
+    String language,
+  ) async {
+    if (!mounted) return;
+    final events = await repo.getEvents();
+    final upcoming = events
+        .where((e) => e.dateTime.isAfter(DateTime.now()))
+        .toList();
+
+    if (upcoming.isEmpty) {
+      final reply = LocalizedResponses.getResponse(language, 'noEvents');
+      if (mounted) {
+        state = state.copyWith(orbState: OrbState.responding, responseText: reply);
+      }
+      await _speakAndWait(reply);
+    } else {
+      final ev = upcoming.first;
+      final timeStr = DateFormat('hh:mm a').format(ev.dateTime);
+      final reply = LocalizedResponses.getFormattedResponse(
+          language, 'nextMeeting', {'title': ev.title, 'time': timeStr});
+      if (mounted) {
+        state = state.copyWith(orbState: OrbState.responding, responseText: reply);
+      }
+      await _speakAndWait(reply);
+    }
+  }
+
+  Future<void> _handleReadMessages(
+    dynamic repo,
+    ParsedIntent intent,
+    String language,
+  ) async {
+    if (!mounted) return;
+    final convs = await repo.getConversations();
+    if (convs.isEmpty) {
+      final reply = LocalizedResponses.getResponse(language, 'noEvents');
+      if (mounted) {
+        state = state.copyWith(orbState: OrbState.responding, responseText: reply);
+      }
+      await _speakAndWait(reply);
+    } else {
+      final reply =
+          'You have ${convs.length} recent chats. '
+          'The last message is from ${convs.first.contactName}: '
+          '"${convs.first.lastMessage}".';
+      if (mounted) {
+        state = state.copyWith(orbState: OrbState.responding, responseText: reply);
+      }
+      await _speakAndWait(reply);
+    }
+  }
+
+  // ---------------------------------------------------------------------- //
+  //  Missing field filler                                                    //
+  // ---------------------------------------------------------------------- //
+
+  ParsedIntent _fillMissingField(
+    ParsedIntent intent,
+    String field,
+    String text,
+  ) {
+    switch (field) {
+      case 'contactName':
+        return ParsedIntent(
+          intent: intent.intent,
+          contactName: text.trim(),
+          messageText: intent.messageText,
+          title: intent.title,
+          time: intent.time,
+          date: intent.date,
+          targetScreen: intent.targetScreen,
+          simSlot: intent.simSlot,
+          rawQuery: intent.rawQuery,
+        );
+      case 'messageText':
+        return ParsedIntent(
+          intent: intent.intent,
+          contactName: intent.contactName,
+          messageText: text.trim(),
+          title: intent.title,
+          time: intent.time,
+          date: intent.date,
+          targetScreen: intent.targetScreen,
+          simSlot: intent.simSlot,
+          rawQuery: intent.rawQuery,
+        );
+      case 'title':
+        return ParsedIntent(
+          intent: intent.intent,
+          contactName: intent.contactName,
+          messageText: intent.messageText,
+          title: text.trim(),
+          time: intent.time,
+          date: intent.date,
+          targetScreen: intent.targetScreen,
+          simSlot: intent.simSlot,
+          rawQuery: intent.rawQuery,
+        );
+      case 'time':
+        return ParsedIntent(
+          intent: intent.intent,
+          contactName: intent.contactName,
+          messageText: intent.messageText,
+          title: intent.title,
+          time: text.trim(),
+          date: intent.date,
+          targetScreen: intent.targetScreen,
+          simSlot: intent.simSlot,
+          rawQuery: intent.rawQuery,
+        );
+      case 'simSlot':
+        return ParsedIntent(
+          intent: intent.intent,
+          contactName: intent.contactName,
+          messageText: intent.messageText,
+          title: intent.title,
+          time: intent.time,
+          date: intent.date,
+          targetScreen: intent.targetScreen,
+          simSlot: text.toLowerCase().trim(),
+          rawQuery: intent.rawQuery,
+        );
+      default:
+        return intent;
+    }
+  }
+
+  // ---------------------------------------------------------------------- //
+  //  TTS — awaitable                                                         //
+  // ---------------------------------------------------------------------- //
+
+  /// Speaks [text] and awaits TTS completion before returning.
+  ///
+  /// Because TtsService.awaitSpeakCompletion(true) is configured, [speak]
+  /// only returns after the audio finishes, so the mic never starts while
+  /// the speaker is still producing sound.
+  Future<void> _speakAndWait(String text) async {
+    if (!mounted) return;
+    final tts = _ref.read(ttsServiceProvider);
+    try {
+      await tts.speak(text);
+    } catch (e) {
+      debugPrint('AssistantController: TTS error: $e');
+    }
+    // Return to idle after TTS finishes (if still in responding state)
+    if (mounted && state.orbState == OrbState.responding) {
+      state = state.copyWith(orbState: OrbState.idle);
+    }
+  }
+
+  // ---------------------------------------------------------------------- //
+  //  History                                                                 //
+  // ---------------------------------------------------------------------- //
+
+  Future<void> _logHistory(
+    String query,
+    String response,
+    String intent,
+  ) async {
     final repo = _ref.read(localRepositoryProvider);
     final historyItem = AssistantHistory(
       id: const Uuid().v4(),
@@ -914,8 +1537,10 @@ class AssistantController extends StateNotifier<AssistantState> {
     await loadHistory();
   }
 
-  /// Parses a time string like "7 PM", "07:30 AM", "9:00 PM" into [hour, minute]
-  /// in 24-hour format. Returns null if it can't be parsed.
+  // ---------------------------------------------------------------------- //
+  //  Utilities                                                               //
+  // ---------------------------------------------------------------------- //
+
   List<int>? _parseTimeToHourMinute(String time) {
     if (time.isEmpty) return null;
     final t = time.toUpperCase().trim();
@@ -934,29 +1559,27 @@ class AssistantController extends StateNotifier<AssistantState> {
   }
 
   bool _matchesYes(String text) {
-    return text == 'yes' ||
-        text == 'yep' ||
-        text == 'yeah' ||
-        text == 'haan' ||
-        text == 'ji' ||
-        text == 'g' ||
-        text == 'yes please' ||
-        text == 'theek hai';
+    const yesWords = {
+      'yes', 'yep', 'yeah', 'sure', 'ok', 'okay', 'alright', 'go', 'proceed',
+      'haan', 'ji', 'g', 'theek hai', 'bilkul', 'zaroor', 'ha',
+    };
+    return yesWords.any((w) => text == w || text.startsWith('$w '));
   }
 
   bool _matchesNo(String text) {
-    return text == 'no' ||
-        text == 'nope' ||
-        text == 'nah' ||
-        text == 'nahi' ||
-        text == 'na' ||
-        text == 'cancel' ||
-        text == 'no thanks' ||
-        text == 'mat karo';
+    const noWords = {
+      'no', 'nope', 'nah', 'cancel', 'stop', 'dont', "don't",
+      'nahi', 'na', 'mat karo', 'band karo', 'rukao',
+    };
+    return noWords.any((w) => text == w || text.startsWith('$w '));
   }
 }
 
+// ========================================================================== //
+//  Provider                                                                   //
+// ========================================================================== //
+
 final assistantControllerProvider =
     StateNotifierProvider<AssistantController, AssistantState>((ref) {
-      return AssistantController(ref);
-    });
+  return AssistantController(ref);
+});

@@ -3,6 +3,7 @@ import 'local_database.dart';
 import 'models.dart';
 import 'package:sqflite/sqflite.dart';
 import '../services/firebase_service.dart';
+import '../services/contact_matcher.dart';
 
 class LocalRepository {
   final LocalDatabase _dbHelper = LocalDatabase.instance;
@@ -69,21 +70,52 @@ class LocalRepository {
   Future<List<Contact>> searchContacts(String nameQuery) async {
     final db = await _dbHelper.database;
     final lowerQuery = nameQuery.toLowerCase();
-    debugPrint('LocalRepository: searching for contact with query: "$nameQuery" (lowercase: "$lowerQuery")');
-    
+    debugPrint('LocalRepository: SQL searching for "$nameQuery"');
+
     final result = await db.query(
       'contacts',
       where: 'LOWER(name) LIKE ?',
       whereArgs: ['%$lowerQuery%'],
       orderBy: 'name ASC',
     );
-    
-    debugPrint('LocalRepository: found ${result.length} contacts matching "$nameQuery"');
-    for (final map in result) {
-      debugPrint('LocalRepository: matched contact - name: "${map['name']}", phone: "${map['phone_number']}"');
-    }
-    
+
+    debugPrint('LocalRepository: SQL found ${result.length} contacts');
     return result.map((map) => Contact.fromMap(map)).toList();
+  }
+
+  /// Fuzzy multilingual contact search.
+  ///
+  /// Loads all contacts then applies [ContactMatcher] which handles:
+  ///   - Case-insensitive + word-by-word matching
+  ///   - Roman Urdu matching ("Salman ko call karo" → "Salman")
+  ///   - Urdu script transliteration ("سلمان" → "Salman")
+  ///   - Levenshtein fuzzy matching (typos, approximations)
+  ///
+  /// Returns contacts sorted by match quality (best match first).
+  Future<List<Contact>> fuzzySearchContacts(String nameQuery) async {
+    if (nameQuery.trim().isEmpty) return [];
+
+    final allContacts = await getContacts();
+    if (allContacts.isEmpty) return [];
+
+    debugPrint('LocalRepository: fuzzy searching ${allContacts.length} contacts for "$nameQuery"');
+
+    final lightContacts = allContacts
+        .map((c) => ContactLite(id: c.id, name: c.name, phone: c.phoneNumber))
+        .toList();
+
+    final matches = ContactMatcher.instance.findMatches(nameQuery, lightContacts);
+
+    final results = matches
+        .map((m) => allContacts.firstWhere((c) => c.id == m.id))
+        .toList();
+
+    debugPrint('LocalRepository: fuzzy found ${results.length} contacts for "$nameQuery"');
+    for (final c in results) {
+      debugPrint('LocalRepository:   → ${c.name} (${c.phoneNumber})');
+    }
+
+    return results;
   }
 
   Future<void> insertContact(Contact contact) async {

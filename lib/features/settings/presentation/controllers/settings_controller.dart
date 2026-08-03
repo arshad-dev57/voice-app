@@ -1,9 +1,10 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/providers/core_providers.dart';
+import '../../../../core/services/shake_detection_service.dart';
 
 class AppSettingsState {
-  final String theme; // "light" or "dark"
-  final String language; // "en" (English), "ur" (Urdu), "roman_ur" (Roman Urdu)
+  final String theme;
+  final String language;
   final double speechRate;
   final double speechPitch;
   final bool shakeActivation;
@@ -80,8 +81,15 @@ class SettingsController extends StateNotifier<AppSettingsState> {
     _ref.read(ttsServiceProvider).setPitch(state.speechPitch);
     _ref.read(ttsServiceProvider).setLanguageCode(state.language);
 
+    // Apply language to the speech recognition engine
+    _ref.read(speechServiceProvider).setLanguageCode(state.language);
+
     // Apply shake activation preference
-    _ref.read(shakeServiceProvider).enable(state.shakeActivation);
+    if (state.shakeActivation) {
+      ShakeDetectionService.startDetection();
+    } else {
+      ShakeDetectionService.stopDetection();
+    }
   }
 
   Future<void> updateTheme(String theme) async {
@@ -94,6 +102,8 @@ class SettingsController extends StateNotifier<AppSettingsState> {
     await _ref.read(localRepositoryProvider).saveSetting('language', lang);
     // Immediately switch the TTS voice to match the chosen language.
     _ref.read(ttsServiceProvider).setLanguageCode(lang);
+    // Also switch the speech recognition language to match the chosen language.
+    _ref.read(speechServiceProvider).setLanguageCode(lang);
   }
 
   Future<void> updateSpeechRate(double rate) async {
@@ -117,7 +127,11 @@ class SettingsController extends StateNotifier<AppSettingsState> {
     await _ref
         .read(localRepositoryProvider)
         .saveSetting('shake_activation', value.toString());
-    _ref.read(shakeServiceProvider).enable(value);
+    if (value) {
+      ShakeDetectionService.startDetection();
+    } else {
+      ShakeDetectionService.stopDetection();
+    }
   }
 
   Future<void> updateWakeWord(bool value) async {

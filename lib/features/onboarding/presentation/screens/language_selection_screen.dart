@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:voice_recoginization_app/features/settings/presentation/controllers/settings_controller.dart';
 import '../../../../theme/app_theme.dart';
 import '../../../../routing/app_router.dart';
+import '../../../../l10n/app_localizations.dart';
 
 class LanguageSelectionScreen extends ConsumerWidget {
   const LanguageSelectionScreen({super.key});
@@ -11,27 +12,28 @@ class LanguageSelectionScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final settings = ref.watch(settingsControllerProvider);
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final l10n = AppLocalizations.of(context)!;
 
     final languages = [
       {
         'code': 'en',
-        'name': 'English',
-        'desc': 'Standard Voice Commands & Responses',
+        'name': l10n.english,
+        'desc': l10n.englishDescription,
       },
       {
         'code': 'ur',
-        'name': 'اردو (Urdu)',
-        'desc': 'صوتی احکامات اور تاثرات اردو میں',
+        'name': l10n.urdu,
+        'desc': l10n.urduDescription,
       },
       {
         'code': 'roman_ur',
-        'name': 'Roman Urdu',
-        'desc': 'Urdu written in English script (e.g. Call karo)',
+        'name': l10n.romanUrdu,
+        'desc': l10n.romanUrduDescription,
       },
     ];
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Select Language'), centerTitle: true),
+      appBar: AppBar(title: Text(l10n.selectLanguage), centerTitle: true),
       body: Container(
         decoration: BoxDecoration(
           gradient: LinearGradient(
@@ -48,7 +50,7 @@ class LanguageSelectionScreen extends ConsumerWidget {
           children: [
             const SizedBox(height: 20),
             Text(
-              'Choose Voice Language',
+              l10n.chooseVoiceLanguage,
               textAlign: TextAlign.center,
               style: Theme.of(
                 context,
@@ -56,7 +58,7 @@ class LanguageSelectionScreen extends ConsumerWidget {
             ),
             const SizedBox(height: 10),
             Text(
-              'Select the primary language you want to speak and hear responses in. You can change this anytime in settings.',
+              l10n.chooseVoiceLanguageDescription,
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                 color: isDark ? AppTheme.darkText : AppTheme.lightText,
@@ -178,9 +180,9 @@ class LanguageSelectionScreen extends ConsumerWidget {
                   borderRadius: BorderRadius.circular(16),
                 ),
               ),
-              child: const Text(
-                'CONTINUE',
-                style: TextStyle(
+              child: Text(
+                l10n.continueButton,
+                style: const TextStyle(
                   fontWeight: FontWeight.bold,
                   letterSpacing: 1.2,
                 ),
