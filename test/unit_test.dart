@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:voice_recoginization_app/core/services/nlp_engine.dart';
+import 'package:voice_recoginization_app/core/services/speech_corrector.dart';
 
 void main() {
   group('NLP Engine Parsing Tests', () {
@@ -76,6 +77,21 @@ void main() {
       final parsed = NlpEngine.parse('Ammi ko message karo');
       expect(parsed.intent, AssistantIntent.message);
       expect(parsed.contactName, 'Ammi');
+    });
+  });
+
+  group('Speech corrector', () {
+    test('fixes go call carol', () {
+      final cleaned = SpeechCorrector.correct('go call carol');
+      final parsed = NlpEngine.parse(cleaned);
+      expect(parsed.intent, AssistantIntent.call);
+    });
+
+    test('fixes coal as call', () {
+      final cleaned = SpeechCorrector.correct('coal Ali');
+      final parsed = NlpEngine.parse(cleaned);
+      expect(parsed.intent, AssistantIntent.call);
+      expect(parsed.contactName, 'Ali');
     });
   });
 }

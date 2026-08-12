@@ -202,7 +202,7 @@ class AssistantController extends StateNotifier<AssistantState> {
     );
 
     await _speakAndWait(greeting, returnToIdle: false);
-    await Future.delayed(const Duration(milliseconds: 350));
+    await Future.delayed(const Duration(milliseconds: 700));
 
     if (mounted) {
       await _startListening();
@@ -251,25 +251,28 @@ class AssistantController extends StateNotifier<AssistantState> {
       );
     }
 
+    final dictatingMessage = state.missingField == 'messageText' ||
+        state.missingField == 'title';
+
     await _ref.read(speechServiceProvider).startListening(
+      commandMode: !dictatingMessage,
       onResult: (text) {
-        // Update transcript live as the user speaks (partial results for UI)
         if (mounted) {
           state = state.copyWith(transcript: text);
         }
       },
-      onError: () {
+      onError: () async {
         if (!mounted) return;
-        debugPrint('AssistantController: STT error/timeout — resetting to idle');
-        final errorMsg = LocalizedResponses.getResponse(language, 'didntHear');
+        debugPrint('AssistantController: STT error/timeout — ask to repeat');
+        final errorMsg = LocalizedResponses.getResponse(language, 'pleaseRepeat');
         state = state.copyWith(
-          orbState: OrbState.idle,
+          orbState: OrbState.responding,
           responseText: errorMsg,
         );
-        _speakAndWait(errorMsg);
+        await _speakAndWait(errorMsg, returnToIdle: false);
+        await _listenAfterPrompt();
       },
       onDone: (finalText) {
-        // Called exactly once with the definitive recognised text
         if (mounted) {
           processSpokenText(finalText);
         }
@@ -302,8 +305,9 @@ class AssistantController extends StateNotifier<AssistantState> {
 
     final detected = LanguageDetector.detect(text);
     _activeLanguage = detected;
+    // TTS follows the user. STT locale stays locked — flipping it mid-session
+    // is the main reason speech suddenly "understands something else".
     _ref.read(ttsServiceProvider).setLanguageCode(detected);
-    _ref.read(speechServiceProvider).setLanguageCode(detected);
     final language = _lang();
 
     // Empty input
@@ -595,7 +599,7 @@ class AssistantController extends StateNotifier<AssistantState> {
         break;
 
       case AssistantIntent.unknown:
-        final reply = LocalizedResponses.getResponse(language, 'unknownCommand');
+        final reply = LocalizedResponses.getResponse(language, 'pleaseRepeat');
         if (mounted) {
           state = state.copyWith(orbState: OrbState.responding, responseText: reply);
         }
@@ -1592,7 +1596,8 @@ class AssistantController extends StateNotifier<AssistantState> {
   }
 
   Future<void> _listenAfterPrompt() async {
-    await Future.delayed(const Duration(milliseconds: 300));
+    // Give the speaker time to fully stop so the mic does not hear TTS.
+    await Future.delayed(const Duration(milliseconds: 700));
     if (mounted) await _startListening();
   }
 

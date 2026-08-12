@@ -550,6 +550,10 @@ class NlpEngine {
     var result = name;
     for (final filler in fillers) {
       result = result.replaceAll(
+        RegExp(r'^\s*' + RegExp.escape(filler) + r'\s*$', caseSensitive: false),
+        '',
+      );
+      result = result.replaceAll(
         RegExp(r'^\s*' + RegExp.escape(filler) + r'\s+', caseSensitive: false),
         '',
       );

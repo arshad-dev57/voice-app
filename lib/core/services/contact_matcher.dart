@@ -144,14 +144,16 @@ class ContactMatcher {
       if (nameWords.isNotEmpty && queryWords.isNotEmpty) {
         final firstName = nameWords.first;
         final queryFirst = queryWords.first;
-        if (queryFirst.length >= 3) {
+        if (queryFirst.length >= 2) {
           final dist = _levenshtein(firstName, queryFirst);
+          // Short names ("Ali" vs STT "Alley") need a looser threshold.
+          if (firstName.length <= 4 && dist <= 2) return 58;
           final maxLen = firstName.length > queryFirst.length
               ? firstName.length
               : queryFirst.length;
           if (maxLen > 0) {
             final similarity = ((maxLen - dist) / maxLen * 100).round();
-            if (similarity >= 70) return similarity - 10;
+            if (similarity >= 65) return similarity - 10;
           }
         }
       }
@@ -164,13 +166,20 @@ class ContactMatcher {
   //  Normalization                                                           //
   // ---------------------------------------------------------------------- //
 
-  /// Lowercases, removes punctuation, trims extra spaces.
+  /// Lowercases, removes punctuation, and maps common STT name distortions.
   static String _normalize(String text) {
-    return text
+    var t = text
         .toLowerCase()
         .replaceAll(RegExp(r'[^\w\s]'), '')
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
+    t = t.replaceAll(RegExp(r'\balley\b'), 'ali');
+    t = t.replaceAll(RegExp(r'\balee\b'), 'ali');
+    t = t.replaceAll(RegExp(r'\baali\b'), 'ali');
+    t = t.replaceAll(RegExp(r'\barmy\b'), 'ammi');
+    t = t.replaceAll(RegExp(r'\bmummy\b'), 'ammi');
+    t = t.replaceAll(RegExp(r'\bmommy\b'), 'mom');
+    return t;
   }
 
   /// Transliterates Urdu script to Latin using the name map.

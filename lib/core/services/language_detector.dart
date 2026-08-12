@@ -45,7 +45,7 @@ class LanguageDetector {
     return 'en';
   }
 
-  /// TTS locale for a detected language code.
+  /// TTS locale. en-IN is clearer for Pakistani English / Roman Urdu.
   static String ttsLocale(String language) {
     switch (language) {
       case 'ur':
@@ -53,11 +53,12 @@ class LanguageDetector {
       case 'roman_ur':
       case 'en':
       default:
-        return 'en-US';
+        return 'en-IN';
     }
   }
 
-  /// STT locale. Roman Urdu is captured best by the English recognizer.
+  /// STT locale. en-IN handles Pakistani accents and Roman Urdu far better
+  /// than en-US. ur-PK only when the user explicitly chose Urdu.
   static String sttLocale(String language) {
     switch (language) {
       case 'ur':
@@ -65,7 +66,7 @@ class LanguageDetector {
       case 'roman_ur':
       case 'en':
       default:
-        return 'en-US';
+        return 'en-IN';
     }
   }
 }
