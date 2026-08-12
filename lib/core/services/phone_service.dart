@@ -140,6 +140,8 @@ class PhoneService {
     }
   }
 
+  /// Sends a real SMS through Android's system Messages app (SmsManager),
+  /// not the in-app chat. Same idea as [makePhoneCall] using the Phone app.
   Future<bool> sendSms({
     required String phoneNumber,
     required String message,
@@ -150,7 +152,7 @@ class PhoneService {
     final granted = await requestSmsPermission();
     if (!granted) {
       debugPrint('PhoneService: SMS permission denied.');
-      return _openSmsComposer(sanitized, message);
+      return openSystemMessages(phoneNumber: sanitized);
     }
 
     try {
@@ -159,19 +161,40 @@ class PhoneService {
         'message': message,
       });
       if (native == true) {
-        debugPrint('PhoneService: native sendSms succeeded');
+        debugPrint('PhoneService: system SMS sent');
         return true;
       }
     } catch (e) {
       debugPrint('PhoneService: native sendSms failed: $e');
     }
 
+    // Fallback still goes to the system SMS app, never an in-app chat.
+    return openSystemMessages(phoneNumber: sanitized);
+  }
+
+  /// Opens Android's default Messages app (optional thread for [phoneNumber]).
+  Future<bool> openSystemMessages({String? phoneNumber}) async {
     try {
-      await _telephony.sendSms(to: sanitized, message: message);
+      final native = await _phoneChannel.invokeMethod<bool>(
+        'openSystemMessages',
+        {'number': phoneNumber},
+      );
+      if (native == true) return true;
+    } catch (e) {
+      debugPrint('PhoneService: openSystemMessages native failed: $e');
+    }
+    try {
+      final data = phoneNumber == null || phoneNumber.isEmpty
+          ? 'sms:'
+          : 'sms:$phoneNumber';
+      final intent = AndroidIntent(
+        action: 'android.intent.action.VIEW',
+        data: data,
+      );
+      await intent.launch();
       return true;
     } catch (e) {
-      debugPrint('PhoneService: telephony sendSms failed: $e');
-      return _openSmsComposer(sanitized, message);
+      return false;
     }
   }
 
@@ -180,20 +203,6 @@ class PhoneService {
     if (status.isGranted) return true;
     final result = await Permission.sms.request();
     return result.isGranted;
-  }
-
-  Future<bool> _openSmsComposer(String phoneNumber, String message) async {
-    try {
-      final intent = AndroidIntent(
-        action: 'android.intent.action.SENDTO',
-        data: 'smsto:$phoneNumber',
-        arguments: <String, dynamic>{'sms_body': message},
-      );
-      await intent.launch();
-      return true;
-    } catch (e) {
-      return false;
-    }
   }
 
   Future<List<SmsMessage>> readInboxMessages({int limit = 10}) async {

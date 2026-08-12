@@ -9,8 +9,10 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.AlarmClock
+import android.provider.Telephony
 import android.telecom.TelecomManager
 import android.telephony.SmsManager
+import android.telephony.SubscriptionManager
 import android.util.Log
 import androidx.core.content.ContextCompat
 
@@ -96,6 +98,11 @@ object NativePhoneActions {
         }
     }
 
+    /**
+     * Sends a real Android SMS via the system SmsManager so it appears in the
+     * phone's Messages app (Google Messages / Samsung Messages) — same idea as
+     * placing a call through the system Phone app. Then opens that thread.
+     */
     fun sendSms(context: Context, rawNumber: String, message: String): Boolean {
         val number = rawNumber.replace(Regex("[^\\d+]"), "")
         if (number.isEmpty() || message.isBlank()) {
@@ -107,10 +114,13 @@ object NativePhoneActions {
             context, Manifest.permission.SEND_SMS
         ) == PackageManager.PERMISSION_GRANTED
 
-        if (hasSmsPermission && sendViaSmsManager(context, number, message)) {
+        val sent = hasSmsPermission && sendViaSmsManager(context, number, message)
+        if (sent) {
+            openSystemSmsThread(context, number)
             return true
         }
 
+        // Last resort: open the system Messages composer pre-filled.
         return openSmsComposer(context, number, message)
     }
 
@@ -123,7 +133,7 @@ object NativePhoneActions {
             } else {
                 smsManager.sendMultipartTextMessage(number, null, parts, null, null)
             }
-            Log.d(TAG, "SMS sent to $number (${parts.size} parts)")
+            Log.d(TAG, "System SMS sent to $number (${parts.size} parts)")
             true
         } catch (e: Exception) {
             Log.e(TAG, "SmsManager send failed: ${e.message}")
@@ -133,10 +143,69 @@ object NativePhoneActions {
 
     @Suppress("DEPRECATION")
     private fun resolveSmsManager(context: Context): SmsManager {
+        val subId = try {
+            SmsManager.getDefaultSmsSubscriptionId()
+        } catch (_: Exception) {
+            SubscriptionManager.INVALID_SUBSCRIPTION_ID
+        }
+
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            context.getSystemService(SmsManager::class.java) ?: SmsManager.getDefault()
+            val mgr = context.getSystemService(SmsManager::class.java)
+                ?: SmsManager.getDefault()
+            if (subId != SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+                mgr.createForSubscriptionId(subId)
+            } else {
+                mgr
+            }
+        } else if (subId != SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+            SmsManager.getSmsManagerForSubscriptionId(subId)
         } else {
             SmsManager.getDefault()
+        }
+    }
+
+    /** Opens the system Messages app conversation for [number]. */
+    fun openSystemSmsThread(context: Context, number: String): Boolean {
+        return try {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("sms:$number")).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                defaultSmsPackage(context)?.let { setPackage(it) }
+            }
+            context.startActivity(intent)
+            Log.d(TAG, "Opened system Messages thread for $number")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "openSystemSmsThread failed: ${e.message}")
+            openSystemMessagesApp(context)
+        }
+    }
+
+    /** Opens the phone's default Messages app (not the in-app chat). */
+    fun openSystemMessagesApp(context: Context): Boolean {
+        return try {
+            val pkg = defaultSmsPackage(context)
+            val launch = if (!pkg.isNullOrBlank()) {
+                context.packageManager.getLaunchIntentForPackage(pkg)
+            } else {
+                null
+            }
+            val intent = launch ?: Intent(Intent.ACTION_MAIN).apply {
+                addCategory(Intent.CATEGORY_APP_MESSAGING)
+            }
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "openSystemMessagesApp failed: ${e.message}")
+            false
+        }
+    }
+
+    private fun defaultSmsPackage(context: Context): String? {
+        return try {
+            Telephony.Sms.getDefaultSmsPackage(context)
+        } catch (_: Exception) {
+            null
         }
     }
 
@@ -145,9 +214,10 @@ object NativePhoneActions {
             val intent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:$number")).apply {
                 putExtra("sms_body", message)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                defaultSmsPackage(context)?.let { setPackage(it) }
             }
             context.startActivity(intent)
-            Log.d(TAG, "SMS composer opened for $number")
+            Log.d(TAG, "System SMS composer opened for $number")
             true
         } catch (e: Exception) {
             Log.e(TAG, "SMS composer failed: ${e.message}")

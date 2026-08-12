@@ -9,8 +9,6 @@ import '../features/assistant/presentation/screens/voice_assistant_screen.dart';
 import '../features/assistant/presentation/screens/activity_history_screen.dart';
 import '../features/calling/presentation/screens/call_management_screen.dart';
 import '../features/contacts/presentation/screens/contacts_screen.dart';
-import '../features/messaging/presentation/screens/messaging_screen.dart';
-import '../features/messaging/presentation/screens/conversation_detail_screen.dart';
 import '../features/alarms/presentation/screens/alarm_screen.dart';
 import '../features/reminders/presentation/screens/reminder_screen.dart';
 import '../features/calendar/presentation/screens/calendar_screen.dart';
@@ -35,8 +33,6 @@ class AppRouter {
   static const String activityHistory = '/activity-history';
   static const String callManagement = '/call-management';
   static const String contacts = '/contacts';
-  static const String messaging = '/messaging';
-  static const String conversationDetail = '/conversation-detail';
   static const String alarms = '/alarms';
   static const String reminders = '/reminders';
   static const String calendar = '/calendar';
@@ -78,14 +74,6 @@ class AppRouter {
         ));
       case contacts:
         return _buildRoute(const ContactsScreen());
-      case messaging:
-        return _buildRoute(const MessagingScreen());
-      case conversationDetail:
-        final args = settingsVal.arguments as Map<String, dynamic>?;
-        return _buildRoute(ConversationDetailScreen(
-          contactName: args?['contactName'] ?? 'Chat',
-          phoneNumber: args?['phoneNumber'] ?? '',
-        ));
       case alarms:
         return _buildRoute(const AlarmScreen());
       case reminders:

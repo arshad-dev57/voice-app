@@ -252,15 +252,11 @@ class _ContactsScreenState extends ConsumerState<ContactsScreen> {
                                     Icons.message_rounded,
                                     color: AppTheme.accent,
                                   ),
+                                  tooltip: 'Open phone Messages',
                                   onPressed: () {
-                                    Navigator.pushNamed(
-                                      context,
-                                      AppRouter.conversationDetail,
-                                      arguments: {
-                                        'contactName': contact.name,
-                                        'phoneNumber': contact.phoneNumber,
-                                      },
-                                    );
+                                    ref.read(phoneServiceProvider).openSystemMessages(
+                                          phoneNumber: contact.phoneNumber,
+                                        );
                                   },
                                 ),
                               ],

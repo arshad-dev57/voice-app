@@ -124,6 +124,15 @@ class MainActivity : FlutterActivity() {
                             result.error("INVALID_ARGUMENT", "number and message are required", null)
                         }
                     }
+                    "openSystemMessages" -> {
+                        val number = call.argument<String>("number")
+                        val ok = if (!number.isNullOrBlank()) {
+                            NativePhoneActions.openSystemSmsThread(this, number)
+                        } else {
+                            NativePhoneActions.openSystemMessagesApp(this)
+                        }
+                        result.success(ok)
+                    }
                     "requestIgnoreBatteryOptimizations" -> {
                         NativePhoneActions.requestIgnoreBatteryOptimizations(this)
                         result.success(true)

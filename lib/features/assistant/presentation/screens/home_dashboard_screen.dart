@@ -67,7 +67,6 @@ class _HomeDashboardScreenState extends ConsumerState<HomeDashboardScreen> {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     // Future providers
-    final unreadCountAsync = ref.watch(unreadMessagesCountProvider);
     final remindersAsync = ref.watch(upcomingRemindersProvider);
     final eventsAsync = ref.watch(todayEventsProvider);
 
@@ -214,7 +213,7 @@ class _HomeDashboardScreenState extends ConsumerState<HomeDashboardScreen> {
                     ),
                     const SizedBox(height: 12),
                     GridView.count(
-                      crossAxisCount: 4,
+                      crossAxisCount: 3,
                       shrinkWrap: true,
                       physics: const NeverScrollableScrollPhysics(),
                       crossAxisSpacing: 12,
@@ -225,12 +224,6 @@ class _HomeDashboardScreenState extends ConsumerState<HomeDashboardScreen> {
                           Icons.call,
                           'Call',
                           AppRouter.contacts,
-                        ),
-                        _quickActionButton(
-                          context,
-                          Icons.message,
-                          'Chat',
-                          AppRouter.messaging,
                         ),
                         _quickActionButton(
                           context,
@@ -252,8 +245,6 @@ class _HomeDashboardScreenState extends ConsumerState<HomeDashboardScreen> {
                     _buildUpcomingSchedule(context, eventsAsync, isDark),
                     const SizedBox(height: 16),
                     _buildUpcomingReminders(context, remindersAsync, isDark),
-                    const SizedBox(height: 16),
-                    _buildInboxSummary(context, unreadCountAsync, isDark),
                     const SizedBox(height: 30),
                   ]),
                 ),
@@ -432,73 +423,6 @@ class _HomeDashboardScreenState extends ConsumerState<HomeDashboardScreen> {
               _errorCard(context, 'Failed to load reminders', isDark),
         ),
       ],
-    );
-  }
-
-  Widget _buildInboxSummary(
-    BuildContext context,
-    AsyncValue<int> count,
-    bool isDark,
-  ) {
-    return count.when(
-      data: (unread) {
-        return InkWell(
-          onTap: () => Navigator.pushNamed(context, AppRouter.messaging),
-          borderRadius: BorderRadius.circular(16),
-          child: Container(
-            padding: const EdgeInsets.all(16),
-            decoration: AppTheme.glassDecoration(isDark: isDark, opacity: 0.05),
-            child: Row(
-              children: [
-                const Icon(
-                  Icons.mail_outline_rounded,
-                  color: AppTheme.primary,
-                  size: 28,
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Unread Messages Summary',
-                        style: TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                      Text(
-                        unread == 0
-                            ? 'All messages read.'
-                            : 'You have $unread active conversations.',
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: Colors.grey,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                if (unread > 0)
-                  Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: const BoxDecoration(
-                      color: AppTheme.primary,
-                      shape: BoxShape.circle,
-                    ),
-                    child: Text(
-                      '$unread',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        );
-      },
-      loading: () => const SizedBox.shrink(),
-      error: (e, s) => const SizedBox.shrink(),
     );
   }
 

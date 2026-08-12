@@ -830,17 +830,6 @@ class AssistantController extends StateNotifier<AssistantState> {
         final body = intent.messageText ?? '';
         final phone = intent.targetScreen ?? '';
 
-        final msg = Message(
-          id: const Uuid().v4(),
-          conversationId: 'conv_$name',
-          senderPhone: 'user',
-          receiverPhone: phone,
-          content: body,
-          isRead: true,
-          createdAt: DateTime.now(),
-        );
-        await repo.insertMessage(msg);
-
         bool sent = false;
         if (phone.isNotEmpty && phone != 'user') {
           sent = await _ref
@@ -1114,9 +1103,9 @@ class AssistantController extends StateNotifier<AssistantState> {
     if (!hasSms) return;
 
     final sendingMsg = _ml(language,
-        en: 'Sending message to $name.',
-        ur: '$name کو میسج بھیج رہا ہوں۔',
-        ro: '$name ko message bhej raha hoon.');
+        en: 'Sending a phone message to $name.',
+        ur: '$name کو فون میسج بھیج رہا ہوں۔',
+        ro: '$name ko phone message bhej raha hoon.');
 
     if (mounted) {
       state = state.copyWith(
@@ -1138,28 +1127,15 @@ class AssistantController extends StateNotifier<AssistantState> {
 
     debugPrint('AssistantController(message): sent=$sent');
 
-    // Also store in local DB
-    final repo = _ref.read(localRepositoryProvider);
-    final msg = Message(
-      id: const Uuid().v4(),
-      conversationId: 'conv_$name',
-      senderPhone: 'user',
-      receiverPhone: phone,
-      content: body,
-      isRead: true,
-      createdAt: DateTime.now(),
-    );
-    await repo.insertMessage(msg);
-
     final finalResponse = sent
         ? _ml(language,
-            en: 'Message sent to $name successfully.',
-            ur: '$name کو میسج کامیابی سے بھیج دیا گیا۔',
-            ro: '$name ko message successfully bhej diya.')
+            en: 'Message sent to $name in your phone Messages app.',
+            ur: '$name کو فون کے میسجز ایپ میں پیغام بھیج دیا گیا۔',
+            ro: '$name ko phone ki Messages app mein message bhej diya.')
         : _ml(language,
-            en: 'Sorry, I couldn\'t send the message to $name. Please check your SMS settings.',
-            ur: 'معذرت، $name کو میسج نہیں بھیجا جا سکا۔',
-            ro: 'Sorry, $name ko message nahi bhej saka.');
+            en: 'Sorry, I couldn\'t send the phone message to $name. Please check SMS permission.',
+            ur: 'معذرت، $name کو فون میسج نہیں بھیجا جا سکا۔',
+            ro: 'Sorry, $name ko phone message nahi bhej saka.');
 
     if (mounted) {
       state = state.copyWith(
@@ -1415,8 +1391,20 @@ class AssistantController extends StateNotifier<AssistantState> {
 
     switch (screen) {
       case 'messages':
-        route = AppRouter.messaging;
-        break;
+        await _ref.read(phoneServiceProvider).openSystemMessages();
+        final opened = _ml(language,
+            en: 'Opening your phone Messages app.',
+            ur: 'فون کی میسجز ایپ کھول رہا ہوں۔',
+            ro: 'Phone ki Messages app khol raha hoon.');
+        if (mounted) {
+          state = state.copyWith(
+            orbState: OrbState.responding,
+            responseText: opened,
+          );
+        }
+        await _speakAndWait(opened);
+        _logHistory(intent.rawQuery, opened, 'navigate');
+        return;
       case 'reminders':
         route = AppRouter.reminders;
         break;
@@ -1480,18 +1468,26 @@ class AssistantController extends StateNotifier<AssistantState> {
     String language,
   ) async {
     if (!mounted) return;
-    final convs = await repo.getConversations();
-    if (convs.isEmpty) {
-      final reply = LocalizedResponses.getResponse(language, 'noEvents');
+    final inbox = await _ref
+        .read(phoneServiceProvider)
+        .readInboxMessages(limit: 3);
+    if (inbox.isEmpty) {
+      final reply = _ml(language,
+          en: 'There are no SMS messages in your phone inbox.',
+          ur: 'فون ان باکس میں کوئی میسج نہیں ہے۔',
+          ro: 'Phone inbox mein koi message nahi hai.');
       if (mounted) {
         state = state.copyWith(orbState: OrbState.responding, responseText: reply);
       }
       await _speakAndWait(reply);
     } else {
-      final reply =
-          'You have ${convs.length} recent chats. '
-          'The last message is from ${convs.first.contactName}: '
-          '"${convs.first.lastMessage}".';
+      final last = inbox.first;
+      final from = last.address ?? 'someone';
+      final body = last.body ?? '';
+      final reply = _ml(language,
+          en: 'Latest phone message from $from: $body',
+          ur: 'فون کا تازہ میسج $from سے: $body',
+          ro: 'Phone ka latest message $from se: $body');
       if (mounted) {
         state = state.copyWith(orbState: OrbState.responding, responseText: reply);
       }

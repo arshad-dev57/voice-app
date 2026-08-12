@@ -57,13 +57,6 @@ final localizedResponsesProvider = Provider<LocalizedResponses>((ref) {
 });
 
 // Future Providers for Dashboard data
-final unreadMessagesCountProvider = FutureProvider<int>((ref) async {
-  final repo = ref.watch(localRepositoryProvider);
-  final convs = await repo.getConversations();
-  // Simply mock the number of unread conversations or do database sum
-  return convs.length; // return count of threads for simplicity
-});
-
 final upcomingRemindersProvider = FutureProvider<List<Reminder>>((ref) async {
   final repo = ref.watch(localRepositoryProvider);
   final reminders = await repo.getReminders();

@@ -127,7 +127,6 @@ class _ConversationDetailScreenState
             _messageController.text = text;
           });
         },
-        onSoundLevelChanged: () {},
         onError: () {
           setState(() => _isDictating = false);
           ScaffoldMessenger.of(context).showSnackBar(
