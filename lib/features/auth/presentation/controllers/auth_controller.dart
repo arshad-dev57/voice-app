@@ -177,6 +177,35 @@ class AuthController extends StateNotifier<AuthState> {
     }
   }
 
+  /// Creates a local guest session so blind users skip typing a login.
+  Future<void> continueAsGuest() async {
+    final repo = _ref.read(localRepositoryProvider);
+    final existing = await repo.getCurrentUser();
+    if (existing != null) {
+      state = AuthState(
+        currentUser: existing,
+        isAuthenticated: true,
+        isLoading: false,
+      );
+      return;
+    }
+
+    final user = AppUser(
+      id: 'guest_local',
+      name: 'Guest',
+      email: 'guest@local',
+      isAuthenticated: true,
+      createdAt: DateTime.now(),
+    );
+    await repo.clearAuthUsers();
+    await repo.saveUser(user);
+    state = AuthState(
+      currentUser: user,
+      isAuthenticated: true,
+      isLoading: false,
+    );
+  }
+
   Future<void> logout() async {
     state = state.copyWith(isLoading: true);
     final firebase = _ref.read(firebaseServiceProvider);

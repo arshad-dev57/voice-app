@@ -1,18 +1,8 @@
-/// Multilingual NLP engine for the voice assistant.
+/// Multilingual NLP for English, Urdu, and Roman Urdu voice commands.
 ///
-/// Language support:
-///   English     : "Call Salman", "Dial Mom", "Call to Salman"
-///   Roman Urdu  : "Salman ko call karo", "Mom ko phone lagao"
-///   Urdu script : "کال سلمان", "سلمان کو کال کرو", "سلمان کو فون کرو"
-///   Mixed       : "please call Salman bhai"
-///
-/// Because STT always produces en-US output (see SpeechService), Urdu-script
-/// input spoken aloud comes back as its phonetic English equivalent, e.g.:
-///   Spoken: "کال سلمان" → STT returns: "call Salman"
-///   Spoken: "سلمان کو فون کرو" → STT returns: "Salman ko phone karo"
-///
-/// The engine therefore primarily handles English + Roman Urdu patterns.
-/// Urdu-script handling is kept as a safety net in case the user types input.
+/// STT usually returns English/Roman Urdu phonetics even when the user speaks
+/// Urdu. Urdu-script patterns are kept as a safety net for typed input.
+library;
 
 enum AssistantIntent {
   call,
@@ -28,6 +18,8 @@ enum AssistantIntent {
   readMessages,
   replyMessage,
   greeting,
+  help,
+  cancel,
   unknown,
 }
 
@@ -62,10 +54,6 @@ class ParsedIntent {
 }
 
 class NlpEngine {
-  // ======================================================================= //
-  //  Public API                                                               //
-  // ======================================================================= //
-
   static ParsedIntent parse(String query) {
     if (query.trim().isEmpty) {
       return ParsedIntent(intent: AssistantIntent.unknown, rawQuery: query);
@@ -73,57 +61,43 @@ class NlpEngine {
 
     final clean = query.toLowerCase().trim();
 
-    // -------------------------------------------------------------------- //
-    //  1. GREETING                                                           //
-    // -------------------------------------------------------------------- //
-    if (_matchesAny(clean, [
-      'hello', 'hi ', 'hi,', 'hey', 'hey assistant',
-      'assalamu alaikum', 'assalam', 'salam',
-      'a salaam', 'helo', 'good morning', 'good evening',
-    ])) {
+    if (_isCancel(clean)) {
+      return ParsedIntent(intent: AssistantIntent.cancel, rawQuery: query);
+    }
+
+    if (_isGreeting(clean)) {
       return ParsedIntent(intent: AssistantIntent.greeting, rawQuery: query);
     }
 
-    // -------------------------------------------------------------------- //
-    //  2. TIME                                                               //
-    // -------------------------------------------------------------------- //
-    if (_matchesAny(clean, [
-      'what time is it', 'time check', 'time kya hai',
-      'waqt kya', 'time kya hua', 'abhi kya time',
-      'current time', 'tell me the time',
-    ])) {
+    if (_isHelp(clean)) {
+      return ParsedIntent(intent: AssistantIntent.help, rawQuery: query);
+    }
+
+    if (_isTime(clean)) {
       return ParsedIntent(intent: AssistantIntent.time, rawQuery: query);
     }
 
-    // -------------------------------------------------------------------- //
-    //  3. CALL INTENT                                                        //
-    //                                                                        //
-    //  Patterns detected:                                                    //
-    //    English   : "call salman", "dial salman", "call to salman"          //
-    //    Roman Urdu: "salman ko call karo", "salman ko phone karo",          //
-    //                "salman ko phone lagao", "salman ko milao",             //
-    //                "salman se baat karao"                                  //
-    //    Urdu      : "کال سلمان", "سلمان کو کال کرو", "سلمان کو فون کرو"    //
-    //                (safety net — STT returns phonetic English normally)    //
-    // -------------------------------------------------------------------- //
     if (_isCallIntent(clean)) {
-      final extracted = _extractCallDetails(clean, query);
-      return extracted;
+      return _extractCallDetails(clean, query);
     }
 
-    // -------------------------------------------------------------------- //
-    //  4. MESSAGING                                                          //
-    // -------------------------------------------------------------------- //
     if (_matchesAny(clean, [
-      'read my latest messages', 'read messages', 'read my messages',
-      'message parho', 'msg parh', 'messages sunao',
+      'read my latest messages',
+      'read messages',
+      'read my messages',
+      'message parho',
+      'msg parh',
+      'messages sunao',
+      'inbox parho',
     ])) {
       return ParsedIntent(intent: AssistantIntent.readMessages, rawQuery: query);
     }
 
     if (_matchesAny(clean, [
-      'reply to this message', 'reply this message',
-      'reply karo', 'jawab do',
+      'reply to this message',
+      'reply this message',
+      'reply karo',
+      'jawab do',
     ])) {
       return ParsedIntent(intent: AssistantIntent.replyMessage, rawQuery: query);
     }
@@ -132,13 +106,7 @@ class NlpEngine {
       return _extractMessageIntent(clean, query);
     }
 
-    // -------------------------------------------------------------------- //
-    //  5. ALARM                                                              //
-    // -------------------------------------------------------------------- //
-    if (_matchesAny(clean, [
-      'alarm', 'wake me up', 'baje ka alarm', 'set an alarm',
-      'alarm set', 'alarm lagao', 'alarm laga',
-    ])) {
+    if (_isAlarmIntent(clean)) {
       final timeStr = _extractTime(clean);
       final dateStr = (clean.contains('tomorrow') || clean.contains('kal'))
           ? 'tomorrow'
@@ -151,19 +119,18 @@ class NlpEngine {
       );
     }
 
-    // -------------------------------------------------------------------- //
-    //  6. REMINDER                                                           //
-    // -------------------------------------------------------------------- //
     if (_matchesAny(clean, [
-      'remind', 'yad dehani', 'remind karo', 'yaad dilao',
+      'remind',
+      'yad dehani',
+      'yaad dehani',
+      'remind karo',
+      'yaad dilao',
+      'yaad dila',
     ])) {
       return _extractReminderIntent(clean, query);
     }
 
-    // -------------------------------------------------------------------- //
-    //  7. CALENDAR                                                           //
-    // -------------------------------------------------------------------- //
-    if (_matchesAny(clean, ['schedule', 'agenda', 'today events'])) {
+    if (_matchesAny(clean, ['schedule', 'agenda', 'today events', 'aaj kya hai'])) {
       return ParsedIntent(
         intent: AssistantIntent.calendarSchedule,
         date: 'today',
@@ -185,9 +152,6 @@ class NlpEngine {
       return _extractDeleteEventIntent(clean, query);
     }
 
-    // -------------------------------------------------------------------- //
-    //  8. NAVIGATION                                                         //
-    // -------------------------------------------------------------------- //
     if (clean.startsWith('open ') ||
         clean.startsWith('show ') ||
         clean.startsWith('go to ')) {
@@ -195,30 +159,92 @@ class NlpEngine {
       if (nav != null) return nav;
     }
 
-    // -------------------------------------------------------------------- //
-    //  9. UNKNOWN                                                            //
-    // -------------------------------------------------------------------- //
     return ParsedIntent(intent: AssistantIntent.unknown, rawQuery: query);
   }
 
-  // ======================================================================= //
-  //  Call intent detection                                                   //
-  // ======================================================================= //
+  static bool _isCancel(String clean) {
+    return _matchesAny(clean, [
+      'cancel',
+      'stop',
+      'never mind',
+      'nevermind',
+      'forget it',
+      'band karo',
+      'rehne do',
+      'mat karo',
+      'cancel karo',
+    ]);
+  }
 
-  /// Returns true if [clean] contains any call-related trigger.
+  static bool _isGreeting(String clean) {
+    return _matchesAny(clean, [
+      'hello',
+      'hi ',
+      'hi,',
+      'hey',
+      'hey assistant',
+      'assalamu alaikum',
+      'assalam',
+      'salam',
+      'a salaam',
+      'helo',
+      'good morning',
+      'good evening',
+      'good afternoon',
+    ]) ||
+        clean == 'hi';
+  }
+
+  static bool _isHelp(String clean) {
+    return _matchesAny(clean, [
+      'what can you do',
+      'help',
+      'help me',
+      'kya kar sakte',
+      'kya kar saktay',
+      'options',
+      'commands',
+      'madad',
+    ]);
+  }
+
+  static bool _isTime(String clean) {
+    return _matchesAny(clean, [
+      'what time is it',
+      'time check',
+      'time kya hai',
+      'waqt kya',
+      'time kya hua',
+      'abhi kya time',
+      'current time',
+      'tell me the time',
+      'kitna time',
+    ]);
+  }
+
   static bool _isCallIntent(String clean) {
-    // English
-    if (clean.startsWith('call ') ||
-        clean.startsWith('dial ') ||
-        clean.startsWith('phone ') ||
-        clean.startsWith('call to ') ||
-        clean.startsWith('please call ') ||
-        clean.startsWith('can you call ') ||
-        clean.startsWith('i want to call ')) {
-      return true;
+    const prefixes = [
+      'call ',
+      'dial ',
+      'phone ',
+      'call to ',
+      'dial to ',
+      'dial call to ',
+      'dial a call to ',
+      'make a call to ',
+      'make call to ',
+      'place a call to ',
+      'please call ',
+      'can you call ',
+      'i want to call ',
+      'i wanna call ',
+      'phone call to ',
+      'ring ',
+    ];
+    for (final p in prefixes) {
+      if (clean.startsWith(p)) return true;
     }
 
-    // Roman Urdu patterns
     if (clean.contains(' ko call karo') ||
         clean.contains(' ko call lagao') ||
         clean.contains(' ko phone karo') ||
@@ -228,12 +254,15 @@ class NlpEngine {
         clean.contains(' se baat karo') ||
         clean.contains(' ko call kar') ||
         clean.contains(' ki call karo') ||
+        clean.contains(' call karo') ||
+        clean.contains(' phone karo') ||
         clean.contains('call lagao') ||
-        clean.contains('phone lagao')) {
+        clean.contains('phone lagao') ||
+        clean.contains('call karo') ||
+        clean.contains('phone kar do')) {
       return true;
     }
 
-    // Urdu script patterns (safety net)
     if (clean.contains('کال') ||
         clean.contains('فون') ||
         clean.contains('ملاؤ') ||
@@ -241,80 +270,81 @@ class NlpEngine {
       return true;
     }
 
-    // Bare "call" in the middle of a sentence
-    if (clean.contains(' call ') || clean.contains(' dial ')) {
+    if (RegExp(r'\b(call|dial|phone)\b').hasMatch(clean) &&
+        !clean.contains('recall') &&
+        !clean.contains('callback')) {
       return true;
     }
 
     return false;
   }
 
-  /// Extracts the contact name and optional SIM slot from a call command.
   static ParsedIntent _extractCallDetails(String clean, String rawQuery) {
     String name = '';
     String? simSlot;
 
-    // ---- English patterns ---- //
-    if (clean.startsWith('call to ')) {
-      name = clean.replaceFirst('call to ', '');
-    } else if (clean.startsWith('please call ')) {
-      name = clean.replaceFirst('please call ', '');
-    } else if (clean.startsWith('can you call ')) {
-      name = clean.replaceFirst('can you call ', '');
-    } else if (clean.startsWith('i want to call ')) {
-      name = clean.replaceFirst('i want to call ', '');
-    } else if (clean.startsWith('call ')) {
-      name = clean.replaceFirst('call ', '');
-    } else if (clean.startsWith('dial ')) {
-      name = clean.replaceFirst('dial ', '');
-    } else if (clean.startsWith('phone ')) {
-      name = clean.replaceFirst('phone ', '');
+    const prefixes = [
+      'dial a call to ',
+      'dial call to ',
+      'make a call to ',
+      'make call to ',
+      'place a call to ',
+      'phone call to ',
+      'i want to call ',
+      'i wanna call ',
+      'can you call ',
+      'please call ',
+      'call to ',
+      'dial to ',
+      'call ',
+      'dial ',
+      'phone ',
+      'ring ',
+    ];
+
+    for (final prefix in prefixes) {
+      if (clean.startsWith(prefix)) {
+        name = clean.substring(prefix.length);
+        break;
+      }
     }
 
-    // ---- Roman Urdu patterns ---- //
-    else if (clean.contains(' ko call karo')) {
-      name = clean.split(' ko call karo').first.trim();
-    } else if (clean.contains(' ko call lagao')) {
-      name = clean.split(' ko call lagao').first.trim();
-    } else if (clean.contains(' ko call kar')) {
-      name = clean.split(' ko call kar').first.trim();
-    } else if (clean.contains(' ko phone karo')) {
-      name = clean.split(' ko phone karo').first.trim();
-    } else if (clean.contains(' ko phone lagao')) {
-      name = clean.split(' ko phone lagao').first.trim();
-    } else if (clean.contains(' ko milao')) {
-      name = clean.split(' ko milao').first.trim();
-    } else if (clean.contains(' se baat karao')) {
-      name = clean.split(' se baat karao').first.trim();
-    } else if (clean.contains(' se baat karo')) {
-      name = clean.split(' se baat karo').first.trim();
-    } else if (clean.contains(' ki call karo')) {
-      name = clean.split(' ki call karo').first.trim();
-    } else if (clean.contains('call lagao')) {
-      // "X call lagao" — extract X
-      name = clean.replaceAll('call lagao', '').trim();
-    } else if (clean.contains('phone lagao')) {
-      name = clean.replaceAll('phone lagao', '').trim();
-    } else if (clean.contains(' call ')) {
-      // Generic "X call Y" — take the part before "call"
+    if (name.isEmpty) {
+      final roman = <String, String Function(String)>{
+        ' ko call karo': (s) => s.split(' ko call karo').first,
+        ' ko call lagao': (s) => s.split(' ko call lagao').first,
+        ' ko call kar': (s) => s.split(' ko call kar').first,
+        ' ko phone karo': (s) => s.split(' ko phone karo').first,
+        ' ko phone lagao': (s) => s.split(' ko phone lagao').first,
+        ' ko milao': (s) => s.split(' ko milao').first,
+        ' se baat karao': (s) => s.split(' se baat karao').first,
+        ' se baat karo': (s) => s.split(' se baat karo').first,
+        ' ki call karo': (s) => s.split(' ki call karo').first,
+        ' call karo': (s) => s.split(' call karo').first,
+        ' phone karo': (s) => s.split(' phone karo').first,
+      };
+      for (final entry in roman.entries) {
+        if (clean.contains(entry.key)) {
+          name = entry.value(clean).trim();
+          break;
+        }
+      }
+    }
+
+    if (name.isEmpty && clean.contains('call lagao')) {
+      name = clean.replaceAll('call lagao', '');
+    } else if (name.isEmpty && clean.contains('phone lagao')) {
+      name = clean.replaceAll('phone lagao', '');
+    } else if (name.isEmpty && clean.contains(' call ')) {
       final parts = clean.split(' call ');
-      name = parts.first.trim();
-    } else if (clean.contains(' dial ')) {
-      final parts = clean.split(' dial ');
-      name = parts.last.trim();
+      name = parts.last.trim().isNotEmpty ? parts.last : parts.first;
+    } else if (name.isEmpty && clean.contains(' dial ')) {
+      name = clean.split(' dial ').last.trim();
     }
 
-    // ---- Urdu script patterns (safety net) ---- //
-    else if (clean.contains('کال')) {
-      // "کال سلمان" or "سلمان کو کال کرو"
+    if (name.isEmpty && (clean.contains('کال') || clean.contains('فون'))) {
       name = clean
           .replaceAll('کال', '')
-          .replaceAll('کو', '')
-          .replaceAll('کرو', '')
-          .replaceAll('لگاؤ', '')
-          .trim();
-    } else if (clean.contains('فون')) {
-      name = clean
           .replaceAll('فون', '')
           .replaceAll('کو', '')
           .replaceAll('کرو', '')
@@ -322,93 +352,40 @@ class NlpEngine {
           .trim();
     }
 
-    // ---- Strip SIM selection suffix ---- //
-    // e.g. "salman from zong", "salman on jazz", "salman via sim1"
     name = _stripSimFromName(name, (sim) => simSlot = sim);
-
-    // ---- Strip filler words from the name ---- //
     name = _stripCallFillers(name);
 
-    // Capitalize properly
     final cleanName = _toTitleCase(name.trim());
-
+    // ignore: avoid_print
     print('NlpEngine: call intent — raw="$rawQuery" → name="$cleanName" sim="$simSlot"');
 
     return ParsedIntent(
       intent: AssistantIntent.call,
-      contactName: cleanName,
+      contactName: cleanName.isEmpty ? null : cleanName,
       simSlot: simSlot?.toLowerCase(),
       rawQuery: rawQuery,
     );
   }
 
-  // ======================================================================= //
-  //  Name cleaning helpers                                                   //
-  // ======================================================================= //
-
-  /// Removes SIM selection words from [name] and calls [onSimFound] with the
-  /// extracted SIM name.
-  static String _stripSimFromName(String name, void Function(String) onSimFound) {
-    for (final sep in [' from ', ' on ', ' via ', ' se ', ' using ']) {
-      if (name.contains(sep)) {
-        final parts = name.split(sep);
-        onSimFound(parts.last.trim());
-        return parts.first.trim();
-      }
-    }
-    return name;
-  }
-
-  /// Removes common filler/command words that might still appear in the name.
-  static String _stripCallFillers(String name) {
-    final fillers = [
-      // English
-      'call', 'dial', 'phone', 'to', 'please', 'can you', 'i want',
-      // Roman Urdu
-      'ko', 'karo', 'lagao', 'milao', 'se', 'ki', 'kar', 'baat',
-      // Urdu script
-      'کو', 'کرو', 'لگاؤ', 'کال', 'فون',
-    ];
-    var result = name;
-    for (final filler in fillers) {
-      // Only strip whole words at start/end to avoid mangling names
-      result = result.replaceAll(RegExp(r'^\s*' + RegExp.escape(filler) + r'\s+', caseSensitive: false), '');
-      result = result.replaceAll(RegExp(r'\s+' + RegExp.escape(filler) + r'\s*$', caseSensitive: false), '');
-    }
-    return result.trim();
-  }
-
-  // ======================================================================= //
-  //  Other intent extractors                                                 //
-  // ======================================================================= //
-
-  // ======================================================================= //
-  //  Message intent detection                                                //
-  // ======================================================================= //
-
-  /// Returns true if [clean] contains any message-related trigger.
-  ///
-  /// Patterns:
-  ///   English   : "send message to X", "text X", "message X", "whatsapp X"
-  ///   Roman Urdu: "X ko message karo", "X ko msg karo", "X ko text bhejo",
-  ///               "X ko message bhejo", "X ko text karo"
-  ///   Urdu      : "X کو پیغام بھیجو", "X کو میسج کرو"  (safety net)
   static bool _isMessageIntent(String clean) {
-    // English
-    if (clean.startsWith('send message to ') ||
-        clean.startsWith('send a message to ') ||
-        clean.startsWith('message to ') ||
-        clean.startsWith('send sms to ') ||
-        clean.startsWith('send text to ') ||
-        clean.startsWith('text to ') ||
-        clean.startsWith('whatsapp ')) {
-      return true;
+    const prefixes = [
+      'send message to ',
+      'send a message to ',
+      'send sms to ',
+      'send a sms to ',
+      'send text to ',
+      'message to ',
+      'text to ',
+      'sms to ',
+      'whatsapp ',
+      'text ',
+      'message ',
+      'sms ',
+    ];
+    for (final p in prefixes) {
+      if (clean.startsWith(p)) return true;
     }
 
-    // English bare "text X" / "message X" (first word)
-    if (clean.startsWith('text ') || clean.startsWith('message ')) return true;
-
-    // Roman Urdu patterns
     if (clean.contains(' ko message karo') ||
         clean.contains(' ko message bhejo') ||
         clean.contains(' ko msg karo') ||
@@ -420,11 +397,11 @@ class NlpEngine {
         clean.contains('message karo') ||
         clean.contains('message bhejo') ||
         clean.contains('msg bhejo') ||
-        clean.contains('msg karo')) {
+        clean.contains('msg karo') ||
+        clean.contains('text bhejo')) {
       return true;
     }
 
-    // Urdu script safety net
     if (clean.contains('پیغام') || clean.contains('میسج')) {
       return true;
     }
@@ -436,19 +413,27 @@ class NlpEngine {
     String name = '';
     String? msgText;
 
-    // ---------- English patterns ----------
     for (final prefix in [
-      'send message to ',
       'send a message to ',
-      'message to ',
+      'send message to ',
+      'send a sms to ',
       'send sms to ',
       'send text to ',
+      'message to ',
       'text to ',
+      'sms to ',
     ]) {
       if (clean.startsWith(prefix)) {
-        final remainder = clean.replaceFirst(prefix, '');
-        final separators = [' saying ', ' that ', ' ko bolo ', ': '];
-        bool found = false;
+        final remainder = clean.substring(prefix.length);
+        final separators = [
+          ' saying ',
+          ' that ',
+          ' ko bolo ',
+          ' and say ',
+          ' and tell ',
+          ': ',
+        ];
+        var found = false;
         for (final sep in separators) {
           if (remainder.contains(sep)) {
             final parts = remainder.split(sep);
@@ -463,28 +448,32 @@ class NlpEngine {
       }
     }
 
-    // "text X <msg>" or "message X <msg>"
     if (name.isEmpty) {
-      for (final prefix in ['text ', 'message ', 'whatsapp ']) {
+      for (final prefix in ['text ', 'message ', 'whatsapp ', 'sms ']) {
         if (clean.startsWith(prefix)) {
-          final remainder = clean.replaceFirst(prefix, '');
+          final remainder = clean.substring(prefix.length);
           final words = remainder.split(' ');
           if (words.isNotEmpty) {
             name = words[0];
-            if (words.length > 1) msgText = words.sublist(1).join(' ').trim();
+            if (words.length > 1) {
+              msgText = words.sublist(1).join(' ').trim();
+            }
           }
           break;
         }
       }
     }
 
-    // ---------- Roman Urdu patterns ----------
     if (name.isEmpty) {
       final patterns = [
-        ' ko message karo', ' ko message bhejo',
-        ' ko msg karo', ' ko msg bhejo',
-        ' ko text karo', ' ko text bhejo',
-        ' ko sms karo', ' ko sms bhejo',
+        ' ko message karo',
+        ' ko message bhejo',
+        ' ko msg karo',
+        ' ko msg bhejo',
+        ' ko text karo',
+        ' ko text bhejo',
+        ' ko sms karo',
+        ' ko sms bhejo',
       ];
       for (final pat in patterns) {
         if (clean.contains(pat)) {
@@ -492,7 +481,7 @@ class NlpEngine {
           name = parts[0].trim();
           if (parts.length > 1) {
             msgText = parts[1]
-                .replaceAll(RegExp(r'^\s*(ke|that|text|bol|bolo|yeh)\s*'), '')
+                .replaceAll(RegExp(r'^\s*(ke|that|text|bol|bolo|yeh|keh)\s*'), '')
                 .trim();
           }
           break;
@@ -500,24 +489,76 @@ class NlpEngine {
       }
     }
 
-    // ---------- Urdu script safety net ----------
-    if (name.isEmpty && clean.contains('پیغام')) {
-      // "X کو پیغام بھیجو" → name before کو
+    if (name.isEmpty && (clean.contains('پیغام') || clean.contains('میسج'))) {
       final parts = clean.split('کو');
       if (parts.isNotEmpty) name = parts[0].trim();
     }
 
-    // Strip any call-like fillers that snuck into the name
     name = _stripMessageFillers(name);
+    if (msgText != null && msgText.isEmpty) msgText = null;
+
+    // Keep the user's original casing for the SMS body.
+    if (msgText != null) {
+      final idx = rawQuery.toLowerCase().lastIndexOf(msgText);
+      if (idx >= 0) {
+        msgText = rawQuery.substring(idx, idx + msgText.length).trim();
+      }
+    }
 
     return ParsedIntent(
       intent: AssistantIntent.message,
-      contactName: _toTitleCase(name.trim()),
-      messageText: msgText != null && msgText.isNotEmpty
-          ? _toTitleCase(msgText)
-          : null,
+      contactName: name.trim().isEmpty ? null : _toTitleCase(name.trim()),
+      messageText: msgText,
       rawQuery: rawQuery,
     );
+  }
+
+  static bool _isAlarmIntent(String clean) {
+    return _matchesAny(clean, [
+      'alarm',
+      'wake me up',
+      'wake me',
+      'baje ka alarm',
+      'set an alarm',
+      'set alarm',
+      'alarm set',
+      'alarm lagao',
+      'alarm laga',
+      'alarm laga do',
+      'الارم',
+    ]);
+  }
+
+  static String _stripSimFromName(String name, void Function(String) onSimFound) {
+    for (final sep in [' from ', ' on ', ' via ', ' se ', ' using ']) {
+      if (name.contains(sep)) {
+        final parts = name.split(sep);
+        onSimFound(parts.last.trim());
+        return parts.first.trim();
+      }
+    }
+    return name;
+  }
+
+  static String _stripCallFillers(String name) {
+    final fillers = [
+      'call', 'dial', 'phone', 'to', 'please', 'can you', 'i want',
+      'a', 'the', 'like', 'someone', 'contact',
+      'ko', 'karo', 'lagao', 'milao', 'se', 'ki', 'kar', 'baat',
+      'کو', 'کرو', 'لگاؤ', 'کال', 'فون',
+    ];
+    var result = name;
+    for (final filler in fillers) {
+      result = result.replaceAll(
+        RegExp(r'^\s*' + RegExp.escape(filler) + r'\s+', caseSensitive: false),
+        '',
+      );
+      result = result.replaceAll(
+        RegExp(r'\s+' + RegExp.escape(filler) + r'\s*$', caseSensitive: false),
+        '',
+      );
+    }
+    return result.trim();
   }
 
   static String _stripMessageFillers(String name) {
@@ -528,8 +569,14 @@ class NlpEngine {
     ];
     var result = name;
     for (final f in fillers) {
-      result = result.replaceAll(RegExp(r'^\s*' + RegExp.escape(f) + r'\s+', caseSensitive: false), '');
-      result = result.replaceAll(RegExp(r'\s+' + RegExp.escape(f) + r'\s*$', caseSensitive: false), '');
+      result = result.replaceAll(
+        RegExp(r'^\s*' + RegExp.escape(f) + r'\s+', caseSensitive: false),
+        '',
+      );
+      result = result.replaceAll(
+        RegExp(r'\s+' + RegExp.escape(f) + r'\s*$', caseSensitive: false),
+        '',
+      );
     }
     return result.trim();
   }
@@ -537,10 +584,11 @@ class NlpEngine {
   static ParsedIntent _extractReminderIntent(String clean, String rawQuery) {
     String? title;
     final timeStr = _extractTime(clean);
-    final dateStr = (clean.contains('tomorrow') || clean.contains('kal')) ? 'tomorrow' : 'today';
+    final dateStr =
+        (clean.contains('tomorrow') || clean.contains('kal')) ? 'tomorrow' : 'today';
 
     if (clean.contains('to take ')) {
-      title = 'take ' + clean.split('to take ')[1].split(' at ')[0].split(' tomorrow')[0].trim();
+      title = 'take ${clean.split('to take ')[1].split(' at ')[0].split(' tomorrow')[0].trim()}';
     } else if (clean.contains('to ')) {
       title = clean.split('to ')[1].split(' at ')[0].split(' tomorrow')[0].trim();
     } else if (clean.contains('about my ')) {
@@ -562,7 +610,8 @@ class NlpEngine {
 
   static ParsedIntent _extractAddEventIntent(String clean, String rawQuery) {
     final timeStr = _extractTime(clean);
-    final dateStr = (clean.contains('tomorrow') || clean.contains('kal')) ? 'tomorrow' : 'today';
+    final dateStr =
+        (clean.contains('tomorrow') || clean.contains('kal')) ? 'tomorrow' : 'today';
     String title = 'Meeting';
 
     if (clean.contains('add ')) {
@@ -583,9 +632,13 @@ class NlpEngine {
   static ParsedIntent _extractDeleteEventIntent(String clean, String rawQuery) {
     String day = 'today';
     const days = {
-      'friday': 'Friday', 'monday': 'Monday', 'tuesday': 'Tuesday',
-      'wednesday': 'Wednesday', 'thursday': 'Thursday',
-      'saturday': 'Saturday', 'sunday': 'Sunday',
+      'friday': 'Friday',
+      'monday': 'Monday',
+      'tuesday': 'Tuesday',
+      'wednesday': 'Wednesday',
+      'thursday': 'Thursday',
+      'saturday': 'Saturday',
+      'sunday': 'Sunday',
     };
     for (final entry in days.entries) {
       if (clean.contains(entry.key)) {
@@ -621,10 +674,6 @@ class NlpEngine {
     );
   }
 
-  // ======================================================================= //
-  //  Utilities                                                               //
-  // ======================================================================= //
-
   static bool _matchesAny(String query, List<String> triggers) {
     for (final trigger in triggers) {
       if (query.contains(trigger)) return true;
@@ -632,7 +681,6 @@ class NlpEngine {
     return false;
   }
 
-  /// Capitalizes each word (title case).
   static String _toTitleCase(String text) {
     if (text.isEmpty) return text;
     return text
@@ -654,8 +702,10 @@ class NlpEngine {
     if (period.isEmpty) {
       if (query.contains('morning') || query.contains('subah')) {
         period = 'am';
-      } else if (query.contains('evening') || query.contains('shaam') ||
-          query.contains('night') || query.contains('raat')) {
+      } else if (query.contains('evening') ||
+          query.contains('shaam') ||
+          query.contains('night') ||
+          query.contains('raat')) {
         period = 'pm';
       } else {
         final h = int.parse(hour);

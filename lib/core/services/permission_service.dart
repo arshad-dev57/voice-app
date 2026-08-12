@@ -31,6 +31,7 @@ class PermissionService {
       Permission.phone,
       Permission.sms,
       Permission.notification,
+      Permission.ignoreBatteryOptimizations,
     ].request();
 
     bool allCriticalGranted = true;

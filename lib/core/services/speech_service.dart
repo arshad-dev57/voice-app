@@ -2,27 +2,22 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:permission_handler/permission_handler.dart';
+import 'language_detector.dart';
 
-/// Service that manages speech recognition for the voice assistant.
+/// Speech recognition for English, Urdu, and Roman Urdu.
 ///
-/// Key design decisions:
-///
-/// 1. **Always use en-US locale for STT**.
-///    Google's en-US model handles code-switching very well — it can recognise
-///    Roman-Urdu words like "karo", "ko", "lagao" alongside English.
-///
-/// 2. **Guaranteed Completion & Timeout Recovery**.
-///    STT timeouts (e.g. error_speech_timeout) or status transitions (notListening/done)
-///    are forwarded to the session callbacks. The state never gets frozen in
-///    `OrbState.listening`.
+/// Roman Urdu is recognised by the English (en-US) model. Native Urdu uses
+/// ur-PK when the device has that locale installed. Locale can switch mid
+/// session when [setLanguageCode] is called after language detection.
 class SpeechService {
   static final SpeechService instance = SpeechService._init();
   final stt.SpeechToText _speech = stt.SpeechToText();
   bool _isInitialized = false;
   bool _hasCompleted = false;
   String _lastRecognizedText = '';
+  String _localeId = 'en-US';
+  List<stt.LocaleName> _locales = const [];
 
-  // Active session callbacks
   Function(String finalText)? _activeOnDone;
   VoidCallback? _activeOnError;
   VoidCallback? _activeOnComplete;
@@ -30,14 +25,27 @@ class SpeechService {
   SpeechService._init();
 
   void setLanguageCode(String languageCode) {
-    debugPrint('SpeechService: setLanguageCode called with $languageCode (en-US is enforced for STT)');
+    _localeId = _resolveLocale(LanguageDetector.sttLocale(languageCode));
+    debugPrint('SpeechService: STT locale set to $_localeId');
   }
 
-  static const String _sttLocale = 'en-US';
+  String _resolveLocale(String preferred) {
+    if (_locales.isEmpty) return preferred;
+    final exact = _locales.where((l) => l.localeId == preferred);
+    if (exact.isNotEmpty) return preferred;
 
-  // ---------------------------------------------------------------------- //
-  //  Initialization                                                          //
-  // ---------------------------------------------------------------------- //
+    if (preferred.startsWith('ur')) {
+      final urdu = _locales.where(
+        (l) => l.localeId.toLowerCase().startsWith('ur'),
+      );
+      if (urdu.isNotEmpty) return urdu.first.localeId;
+    }
+    final en = _locales.where(
+      (l) => l.localeId == 'en-US' || l.localeId == 'en_US',
+    );
+    if (en.isNotEmpty) return en.first.localeId;
+    return preferred;
+  }
 
   Future<bool> initialize() async {
     if (_isInitialized) return true;
@@ -60,7 +68,6 @@ class SpeechService {
           debugPrint('SpeechService Status: $status');
           if ((status == 'notListening' || status == 'done') && !_hasCompleted) {
             _hasCompleted = true;
-            debugPrint('SpeechService: status transition $status -> firing completion with "$_lastRecognizedText"');
             if (_activeOnDone != null) {
               _activeOnDone?.call(_lastRecognizedText);
             } else if (_activeOnComplete != null) {
@@ -69,7 +76,13 @@ class SpeechService {
           }
         },
       );
-      debugPrint('SpeechService initialized: $_isInitialized (locale: $_sttLocale)');
+      if (_isInitialized) {
+        try {
+          _locales = await _speech.locales();
+        } catch (_) {}
+        _localeId = _resolveLocale(_localeId);
+      }
+      debugPrint('SpeechService initialized: $_isInitialized (locale: $_localeId)');
     } catch (e) {
       debugPrint('SpeechService init exception: $e');
       _isInitialized = false;
@@ -77,24 +90,13 @@ class SpeechService {
     return _isInitialized;
   }
 
-  // ---------------------------------------------------------------------- //
-  //  Permission                                                              //
-  // ---------------------------------------------------------------------- //
-
   Future<bool> checkPermission() async {
     final status = await Permission.microphone.status;
     if (status.isGranted) return true;
-    if (status.isPermanentlyDenied) {
-      debugPrint('SpeechService: Microphone permission permanently denied');
-      return false;
-    }
+    if (status.isPermanentlyDenied) return false;
     final result = await Permission.microphone.request();
     return result.isGranted;
   }
-
-  // ---------------------------------------------------------------------- //
-  //  Listening                                                               //
-  // ---------------------------------------------------------------------- //
 
   Future<void> startListening({
     required Function(String text) onResult,
@@ -105,14 +107,12 @@ class SpeechService {
   }) async {
     final hasPermission = await checkPermission();
     if (!hasPermission) {
-      debugPrint('SpeechService: microphone permission denied');
       onError();
       return;
     }
 
     final isReady = await initialize();
     if (!isReady) {
-      debugPrint('SpeechService: not initialized');
       onError();
       return;
     }
@@ -125,7 +125,6 @@ class SpeechService {
 
     try {
       await _speech.listen(
-        localeId: _sttLocale,
         onResult: (result) {
           _lastRecognizedText = result.recognizedWords;
           onResult(result.recognizedWords);
@@ -140,12 +139,13 @@ class SpeechService {
             }
           }
         },
-        listenFor: const Duration(seconds: 15),
-        pauseFor: const Duration(seconds: 3),
         listenOptions: stt.SpeechListenOptions(
           cancelOnError: false,
           partialResults: true,
           listenMode: stt.ListenMode.confirmation,
+          listenFor: const Duration(seconds: 20),
+          pauseFor: const Duration(seconds: 3),
+          localeId: _localeId,
         ),
       );
     } catch (e) {

@@ -6,22 +6,18 @@ import 'package:uuid/uuid.dart';
 import '../database/models.dart';
 import '../database/local_repository.dart';
 
-/// Service for managing alarms with both local storage and Android system integration.
-/// Supports background execution and real system alarm setting.
 class AlarmService {
   static final AlarmService instance = AlarmService._init();
   AlarmService._init();
 
   static const _alarmChannel = MethodChannel('com.example.voice_recoginization_app/alarm');
 
-  /// Sets an alarm both in the local app and in the Android system Clock app.
   /// 
   /// [hour] and [minute] should be in 24-hour format.
   /// [label] is the alarm label/description.
   /// [repeatDays] is a comma-separated list of days (e.g., "Mon,Tue,Wed").
-  /// [repository] is the local repository for storing alarm data.
-  /// 
-  /// Returns true if both local and system alarms were set successfully.
+  /// [repository] is the local repository for storing alarm .
+  
   Future<bool> setAlarm({
     required int hour,
     required int minute,

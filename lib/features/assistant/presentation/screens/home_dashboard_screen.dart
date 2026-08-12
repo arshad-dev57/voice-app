@@ -4,7 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:voice_recoginization_app/core/database/models.dart';
 import '../../../../core/providers/core_providers.dart';
-import '../../../../core/services/shake_detection_service.dart';
 import '../../../../routing/app_router.dart';
 import '../../../../shared/widgets/voice_orb.dart';
 import '../../../../theme/app_theme.dart';
@@ -33,14 +32,7 @@ class _HomeDashboardScreenState extends ConsumerState<HomeDashboardScreen> {
       (Timer t) => _updateDateTime(),
     );
 
-    // Register shake callback with native ShakeDetectionService
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      ShakeDetectionService.setOnShakeDetectedCallback(() {
-        if (mounted) {
-          Navigator.pushNamed(context, AppRouter.assistant);
-        }
-      });
-    });
+    // Shake is handled globally by AssistantController — do not overwrite it.
   }
 
   @override

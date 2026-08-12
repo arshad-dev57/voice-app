@@ -54,6 +54,7 @@ dependencies {
     // Enables Java 8+ APIs on older Android versions (needed by
     // flutter_local_notifications).
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+    implementation("androidx.core:core-ktx:1.15.0")
 }
 
 

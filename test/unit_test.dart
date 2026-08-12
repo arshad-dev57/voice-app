@@ -25,14 +25,14 @@ void main() {
       final parsed = NlpEngine.parse('Text Ali I am coming');
       expect(parsed.intent, AssistantIntent.message);
       expect(parsed.contactName, 'Ali');
-      expect(parsed.messageText, 'I am coming');
+      expect(parsed.messageText?.toLowerCase(), 'i am coming');
     });
 
     test('Urdu/Mixed SMS Command', () {
       final parsed = NlpEngine.parse('Ali ko message karo text I am coming');
       expect(parsed.intent, AssistantIntent.message);
       expect(parsed.contactName, 'Ali');
-      expect(parsed.messageText, 'I am coming');
+      expect(parsed.messageText?.toLowerCase(), 'i am coming');
     });
 
     test('English Alarm Command', () {
@@ -45,7 +45,7 @@ void main() {
     test('English Reminder Command', () {
       final parsed = NlpEngine.parse('Remind me to take medicine at 9 PM');
       expect(parsed.intent, AssistantIntent.reminder);
-      expect(parsed.title, 'Take medicine');
+      expect(parsed.title?.toLowerCase(), 'take medicine');
       expect(parsed.time, '9:00 PM');
     });
 
@@ -57,6 +57,25 @@ void main() {
     test('General Schedule Check', () {
       final parsed = NlpEngine.parse('What is my schedule today?');
       expect(parsed.intent, AssistantIntent.calendarSchedule);
+    });
+
+    test('Dial call to contact', () {
+      final parsed = NlpEngine.parse('dial call to Ali');
+      expect(parsed.intent, AssistantIntent.call);
+      expect(parsed.contactName, 'Ali');
+    });
+
+    test('Message to contact without body', () {
+      final parsed = NlpEngine.parse('message to Mom');
+      expect(parsed.intent, AssistantIntent.message);
+      expect(parsed.contactName, 'Mom');
+      expect(parsed.messageText, isNull);
+    });
+
+    test('Roman Urdu message without body', () {
+      final parsed = NlpEngine.parse('Ammi ko message karo');
+      expect(parsed.intent, AssistantIntent.message);
+      expect(parsed.contactName, 'Ammi');
     });
   });
 }

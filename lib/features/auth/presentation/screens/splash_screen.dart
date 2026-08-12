@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../../core/providers/core_providers.dart';
 import '../../../../theme/app_theme.dart';
 import '../../../../routing/app_router.dart';
 import '../controllers/auth_controller.dart';
@@ -11,7 +12,8 @@ class SplashScreen extends ConsumerStatefulWidget {
   ConsumerState<SplashScreen> createState() => _SplashScreenState();
 }
 
-class _SplashScreenState extends ConsumerState<SplashScreen> with SingleTickerProviderStateMixin {
+class _SplashScreenState extends ConsumerState<SplashScreen>
+    with SingleTickerProviderStateMixin {
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
   late Animation<double> _scaleAnimation;
@@ -37,20 +39,26 @@ class _SplashScreenState extends ConsumerState<SplashScreen> with SingleTickerPr
   }
 
   Future<void> _navigateToNext() async {
-    // Wait for the minimum splash duration
-    await Future.delayed(const Duration(milliseconds: 2500));
+    await Future.delayed(const Duration(milliseconds: 1800));
     if (!mounted) return;
 
-    // Wait for auth check to complete if still loading
     final authState = ref.read(authControllerProvider);
     if (authState.isLoading) {
       await ref.read(authControllerProvider.notifier).checkAuthStatus();
     }
+    if (!mounted) return;
+
+    final repo = ref.read(localRepositoryProvider);
+    final onboarded = await repo.getSetting('onboarding_complete');
+    final finalAuthState = ref.read(authControllerProvider);
 
     if (!mounted) return;
 
-    final finalAuthState = ref.read(authControllerProvider);
-    if (finalAuthState.isAuthenticated) {
+    if (finalAuthState.isAuthenticated || onboarded == 'true') {
+      if (!finalAuthState.isAuthenticated) {
+        await ref.read(authControllerProvider.notifier).continueAsGuest();
+      }
+      if (!mounted) return;
       Navigator.pushReplacementNamed(context, AppRouter.home);
     } else {
       Navigator.pushReplacementNamed(context, AppRouter.onboarding);
@@ -71,8 +79,8 @@ class _SplashScreenState extends ConsumerState<SplashScreen> with SingleTickerPr
       body: Container(
         decoration: BoxDecoration(
           gradient: LinearGradient(
-            colors: isDark 
-                ? [AppTheme.darkBg, const Color(0xFF161B22)] 
+            colors: isDark
+                ? [AppTheme.darkBg, const Color(0xFF161B22)]
                 : [AppTheme.lightBg, const Color(0xFFE5E9F0)],
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
@@ -108,7 +116,7 @@ class _SplashScreenState extends ConsumerState<SplashScreen> with SingleTickerPr
                   ),
                   const SizedBox(height: 30),
                   Text(
-                    'SMART VOICE ASSISTANT',
+                    'VOICE ASSISTANT',
                     style: Theme.of(context).textTheme.headlineMedium?.copyWith(
                           fontWeight: FontWeight.w900,
                           letterSpacing: 2.0,
@@ -117,10 +125,11 @@ class _SplashScreenState extends ConsumerState<SplashScreen> with SingleTickerPr
                   ),
                   const SizedBox(height: 10),
                   Text(
-                    'AI-POWERED HANDS-FREE CONTROL',
+                    'SHAKE TO TALK  ·  CALL  ·  MESSAGE  ·  ALARM',
+                    textAlign: TextAlign.center,
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           fontWeight: FontWeight.w600,
-                          letterSpacing: 1.5,
+                          letterSpacing: 1.2,
                         ),
                   ),
                 ],

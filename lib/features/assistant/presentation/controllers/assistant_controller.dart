@@ -8,6 +8,7 @@ import '../../../../core/providers/core_providers.dart';
 import '../../../../core/services/nlp_engine.dart';
 import '../../../../core/services/shake_detection_service.dart';
 import '../../../../core/services/localized_responses.dart';
+import '../../../../core/services/language_detector.dart';
 import '../../../../routing/app_router.dart';
 import '../../../settings/presentation/controllers/settings_controller.dart';
 
@@ -75,10 +76,13 @@ class AssistantState {
 
 class AssistantController extends StateNotifier<AssistantState> {
   final Ref _ref;
+  String _activeLanguage = 'en';
 
   AssistantController(this._ref) : super(AssistantState()) {
     _initialize();
   }
+
+  String _lang() => _activeLanguage;
 
   // ---------------------------------------------------------------------- //
   //  Initialization                                                          //
@@ -108,23 +112,30 @@ class AssistantController extends StateNotifier<AssistantState> {
     // 5. Initialize shake detection (this also starts the Android service)
     _initializeShakeDetection();
 
-    // 6. Update initial greeting in correct language
-    Future.delayed(const Duration(milliseconds: 200), () {
+    // Keep the service alive across Doze. Ask once so we don't spam the dialog.
+    try {
+      final asked = await repo.getSetting('battery_opt_asked');
+      if (asked != 'true') {
+        await _ref.read(phoneServiceProvider).requestIgnoreBatteryOptimizations();
+        await repo.saveSetting('battery_opt_asked', 'true');
+      }
+    } catch (_) {}
+
+    // 6. Speak the welcome once so a blind user knows the app is ready.
+    Future.delayed(const Duration(milliseconds: 600), () async {
       if (!mounted) return;
-      final settings = _ref.read(settingsControllerProvider);
-      final language = settings.language;
-      state = state.copyWith(
-        responseText: LocalizedResponses.getResponse(language, 'initialGreeting'),
-      );
+      final greeting =
+          LocalizedResponses.getResponse(_lang(), 'initialGreeting');
+      state = state.copyWith(responseText: greeting);
+      await _speakAndWait(greeting);
     });
   }
 
   void _syncLanguageToServices() {
     final settings = _ref.read(settingsControllerProvider);
-    final language = settings.language;
-    _ref.read(ttsServiceProvider).setLanguageCode(language);
-    // Note: SpeechService always uses en-US regardless of app language
-    // (see SpeechService class documentation for rationale)
+    _activeLanguage = settings.language;
+    _ref.read(ttsServiceProvider).setLanguageCode(_activeLanguage);
+    _ref.read(speechServiceProvider).setLanguageCode(_activeLanguage);
   }
 
   void _initializeShakeDetection() {
@@ -148,21 +159,30 @@ class AssistantController extends StateNotifier<AssistantState> {
 
   void _onShakeDetected() {
     if (!mounted) return;
-    // Always wake up on shake unless the assistant is currently speaking via TTS.
-    // If an STT session was active, cancel it and start fresh.
-    if (state.orbState != OrbState.responding) {
-      debugPrint('AssistantController: shake detected, starting fresh voice session');
-      _ref.read(speechServiceProvider).cancelListening();
-      _greetAndListen();
-    } else {
-      debugPrint('AssistantController: shake ignored because assistant is speaking');
-    }
+    debugPrint('AssistantController: shake detected — starting a fresh session');
+    _startFreshSession();
+  }
+
+  /// Shake (or a full-screen tap) always starts over: stop TTS/mic, clear
+  /// pending prompts, greet, then listen. Blind users never get stuck.
+  Future<void> _startFreshSession() async {
+    if (!mounted) return;
+    await _ref.read(speechServiceProvider).cancelListening();
+    await _ref.read(ttsServiceProvider).stop();
+    if (!mounted) return;
+    state = state.copyWith(
+      isConfirming: false,
+      clearPendingIntent: true,
+      clearMissingField: true,
+      clearMultipleContacts: true,
+      transcript: '',
+    );
+    await _greetAndListen();
   }
 
   Future<void> _greetAndListen() async {
     if (!mounted) return;
-    final settings = _ref.read(settingsControllerProvider);
-    final language = settings.language;
+    final language = _lang();
 
     final greetings = [
       LocalizedResponses.getResponse(language, 'greeting1'),
@@ -181,12 +201,8 @@ class AssistantController extends StateNotifier<AssistantState> {
       responseText: greeting,
     );
 
-    // Await TTS completion before starting microphone.
-    // This prevents the mic from picking up the TTS output.
-    await _speakAndWait(greeting);
-
-    // Small gap between TTS end and mic start
-    await Future.delayed(const Duration(milliseconds: 300));
+    await _speakAndWait(greeting, returnToIdle: false);
+    await Future.delayed(const Duration(milliseconds: 350));
 
     if (mounted) {
       await _startListening();
@@ -203,14 +219,16 @@ class AssistantController extends StateNotifier<AssistantState> {
       await speech.stopListening();
       if (mounted) state = state.copyWith(orbState: OrbState.idle);
     } else {
-      await _startListening();
+      await _startFreshSession();
     }
   }
 
+  /// Public entry used by the home screen (tap or shake).
+  Future<void> startVoiceSession() => _startFreshSession();
+
   Future<void> _startListening() async {
     if (!mounted) return;
-    final settings = _ref.read(settingsControllerProvider);
-    final language = settings.language;
+    final language = _lang();
 
     // Check microphone permission first
     final hasMic = await _ref
@@ -279,10 +297,14 @@ class AssistantController extends StateNotifier<AssistantState> {
 
   Future<void> processSpokenText(String text) async {
     if (!mounted) return;
-    final settings = _ref.read(settingsControllerProvider);
-    final language = settings.language;
 
     debugPrint('AssistantController: processSpokenText("$text")');
+
+    final detected = LanguageDetector.detect(text);
+    _activeLanguage = detected;
+    _ref.read(ttsServiceProvider).setLanguageCode(detected);
+    _ref.read(speechServiceProvider).setLanguageCode(detected);
+    final language = _lang();
 
     // Empty input
     if (text.trim().isEmpty ||
@@ -292,11 +314,12 @@ class AssistantController extends StateNotifier<AssistantState> {
         state = state.copyWith(orbState: OrbState.idle, responseText: didntHear);
       }
       await _speakAndWait(didntHear);
+      await _listenAfterPrompt();
       return;
     }
 
     if (mounted) state = state.copyWith(orbState: OrbState.processing);
-    await Future.delayed(const Duration(milliseconds: 400));
+    await Future.delayed(const Duration(milliseconds: 250));
 
     final cleanText = text.toLowerCase().trim();
 
@@ -331,7 +354,8 @@ class AssistantController extends StateNotifier<AssistantState> {
         if (mounted) {
           state = state.copyWith(orbState: OrbState.responding, responseText: prompt);
         }
-        await _speakAndWait(prompt);
+        await _speakAndWait(prompt, returnToIdle: false);
+        await _listenAfterPrompt();
       }
       return;
     }
@@ -340,6 +364,17 @@ class AssistantController extends StateNotifier<AssistantState> {
     //  C. Missing field dialog (contact name, message, time, etc.)      //
     // ---------------------------------------------------------------- //
     if (state.missingField != null && state.pendingIntent != null) {
+      final reparsed = NlpEngine.parse(text);
+      if (reparsed.intent != AssistantIntent.unknown &&
+          reparsed.intent != AssistantIntent.greeting &&
+          reparsed.intent != AssistantIntent.cancel &&
+          (reparsed.intent != state.pendingIntent!.intent ||
+              (state.missingField == 'contactName' &&
+                  reparsed.contactName != null &&
+                  reparsed.contactName!.trim().isNotEmpty))) {
+        await _checkAndProgressIntent(reparsed);
+        return;
+      }
       final updatedIntent = _fillMissingField(
         state.pendingIntent!,
         state.missingField!,
@@ -363,8 +398,7 @@ class AssistantController extends StateNotifier<AssistantState> {
 
   Future<void> _handleDisambiguation(String text, String cleanText) async {
     if (!mounted) return;
-    final settings = _ref.read(settingsControllerProvider);
-    final language = settings.language;
+    final language = _lang();
     final contacts = state.multipleContacts!;
 
     // Try to match the user's reply against the list of multiple contacts
@@ -443,8 +477,7 @@ class AssistantController extends StateNotifier<AssistantState> {
   Future<void> _checkAndProgressIntent(ParsedIntent intent) async {
     if (!mounted) return;
     final repo = _ref.read(localRepositoryProvider);
-    final settings = _ref.read(settingsControllerProvider);
-    final language = settings.language;
+    final language = _lang();
 
     switch (intent.intent) {
       // ---------------------------------------------------------------- //
@@ -533,14 +566,41 @@ class AssistantController extends StateNotifier<AssistantState> {
         break;
 
       // ---------------------------------------------------------------- //
+      case AssistantIntent.help:
+        final help = _ml(language,
+            en: 'Shake your phone or tap the screen. You can say: call a contact, message a contact, or set an alarm. Speak in English, Urdu, or Roman Urdu.',
+            ur: 'فون ہلائیں یا اسکرین دبائیں۔ آپ کہہ سکتے ہیں: کسی کو کال کرو، میسج بھیجو، یا الارم لگاؤ۔ انگریزی، اردو یا رومن اردو میں بولیں۔',
+            ro: 'Phone hilayein ya screen dabayein. Aap keh sakte hain: kisi ko call karo, message bhejo, ya alarm lagao. English, Urdu ya Roman Urdu mein bolein.');
+        if (mounted) {
+          state = state.copyWith(orbState: OrbState.responding, responseText: help);
+        }
+        await _speakAndWait(help, returnToIdle: false);
+        await _listenAfterPrompt();
+        _logHistory(intent.rawQuery, help, 'help');
+        break;
+
+      case AssistantIntent.cancel:
+        final cancelled = LocalizedResponses.getResponse(language, 'cancelled');
+        if (mounted) {
+          state = state.copyWith(
+            orbState: OrbState.responding,
+            responseText: cancelled,
+            isConfirming: false,
+            clearPendingIntent: true,
+            clearMissingField: true,
+            clearMultipleContacts: true,
+          );
+        }
+        await _speakAndWait(cancelled);
+        break;
+
       case AssistantIntent.unknown:
         final reply = LocalizedResponses.getResponse(language, 'unknownCommand');
         if (mounted) {
           state = state.copyWith(orbState: OrbState.responding, responseText: reply);
         }
-        await _speakAndWait(reply);
-        await Future.delayed(const Duration(milliseconds: 300));
-        if (mounted) await _startListening();
+        await _speakAndWait(reply, returnToIdle: false);
+        await _listenAfterPrompt();
         break;
     }
   }
@@ -596,6 +656,11 @@ class AssistantController extends StateNotifier<AssistantState> {
       matched = await repo.fuzzySearchContacts(contactName);
       if (matched.isEmpty) {
         matched = await repo.searchContacts(contactName);
+      }
+      if (matched.isEmpty) {
+        matched = await _ref
+            .read(contactsServiceProvider)
+            .searchDeviceLive(contactName);
       }
     }
 
@@ -740,8 +805,7 @@ class AssistantController extends StateNotifier<AssistantState> {
   Future<void> _executeIntent(ParsedIntent intent) async {
     if (!mounted) return;
     final repo = _ref.read(localRepositoryProvider);
-    final settings = _ref.read(settingsControllerProvider);
-    final language = settings.language;
+    final language = _lang();
 
     switch (intent.intent) {
       case AssistantIntent.call:
@@ -938,6 +1002,11 @@ class AssistantController extends StateNotifier<AssistantState> {
       await _ref.read(contactsServiceProvider).importDeviceContacts(repo);
       matched = await repo.fuzzySearchContacts(contactName);
       if (matched.isEmpty) matched = await repo.searchContacts(contactName);
+      if (matched.isEmpty) {
+        matched = await _ref
+            .read(contactsServiceProvider)
+            .searchDeviceLive(contactName);
+      }
     }
 
     // ── Step 4: Contact not found ────────────────────────────────────────────
@@ -1095,7 +1164,7 @@ class AssistantController extends StateNotifier<AssistantState> {
       );
     }
 
-    if (!sent) await _speakAndWait(finalResponse);
+    await _speakAndWait(finalResponse);
 
     _logHistory(rawQuery, finalResponse, 'message');
 
@@ -1128,7 +1197,8 @@ class AssistantController extends StateNotifier<AssistantState> {
           pendingIntent: intent,
         );
       }
-      await _speakAndWait(askTime);
+      await _speakAndWait(askTime, returnToIdle: false);
+      await _listenAfterPrompt();
       return;
     }
 
@@ -1155,8 +1225,10 @@ class AssistantController extends StateNotifier<AssistantState> {
       await _speakAndWait(reply);
       _logHistory(intent.rawQuery, reply, 'alarm');
     } else {
-      const reply =
-          'I couldn\'t understand the time. Please say it like "8 PM" or "7:30 AM".';
+      final reply = _ml(language,
+          en: 'I couldn\'t understand the time. Please say it like 8 PM or 7 30 AM.',
+          ur: 'وقت سمجھ نہیں آیا۔ براہ کرم اس طرح کہیں جیسے 8 بجے یا 7:30۔',
+          ro: 'Time samajh nahi aaya. Please 8 PM ya 7 30 AM kehein.');
       if (mounted) {
         state = state.copyWith(
           orbState: OrbState.responding,
@@ -1165,7 +1237,8 @@ class AssistantController extends StateNotifier<AssistantState> {
           pendingIntent: intent,
         );
       }
-      await _speakAndWait(reply);
+      await _speakAndWait(reply, returnToIdle: false);
+      await _listenAfterPrompt();
     }
   }
 
@@ -1185,7 +1258,8 @@ class AssistantController extends StateNotifier<AssistantState> {
           pendingIntent: intent,
         );
       }
-      await _speakAndWait(askTitle);
+      await _speakAndWait(askTitle, returnToIdle: false);
+      await _listenAfterPrompt();
       return;
     }
     if (intent.time == null || intent.time!.isEmpty) {
@@ -1198,7 +1272,8 @@ class AssistantController extends StateNotifier<AssistantState> {
           pendingIntent: intent,
         );
       }
-      await _speakAndWait(askTime);
+      await _speakAndWait(askTime, returnToIdle: false);
+      await _listenAfterPrompt();
       return;
     }
 
@@ -1268,7 +1343,8 @@ class AssistantController extends StateNotifier<AssistantState> {
           pendingIntent: intent,
         );
       }
-      await _speakAndWait(askTitle);
+      await _speakAndWait(askTitle, returnToIdle: false);
+      await _listenAfterPrompt();
       return;
     }
     if (intent.time == null || intent.time!.isEmpty) {
@@ -1281,7 +1357,8 @@ class AssistantController extends StateNotifier<AssistantState> {
           pendingIntent: intent,
         );
       }
-      await _speakAndWait(askTime);
+      await _speakAndWait(askTime, returnToIdle: false);
+      await _listenAfterPrompt();
       return;
     }
 
@@ -1499,10 +1576,9 @@ class AssistantController extends StateNotifier<AssistantState> {
 
   /// Speaks [text] and awaits TTS completion before returning.
   ///
-  /// Because TtsService.awaitSpeakCompletion(true) is configured, [speak]
-  /// only returns after the audio finishes, so the mic never starts while
-  /// the speaker is still producing sound.
-  Future<void> _speakAndWait(String text) async {
+  /// When [returnToIdle] is false, the caller will start the microphone next
+  /// so we stay in the responding state until listening begins.
+  Future<void> _speakAndWait(String text, {bool returnToIdle = true}) async {
     if (!mounted) return;
     final tts = _ref.read(ttsServiceProvider);
     try {
@@ -1510,10 +1586,14 @@ class AssistantController extends StateNotifier<AssistantState> {
     } catch (e) {
       debugPrint('AssistantController: TTS error: $e');
     }
-    // Return to idle after TTS finishes (if still in responding state)
-    if (mounted && state.orbState == OrbState.responding) {
+    if (returnToIdle && mounted && state.orbState == OrbState.responding) {
       state = state.copyWith(orbState: OrbState.idle);
     }
+  }
+
+  Future<void> _listenAfterPrompt() async {
+    await Future.delayed(const Duration(milliseconds: 300));
+    if (mounted) await _startListening();
   }
 
   // ---------------------------------------------------------------------- //

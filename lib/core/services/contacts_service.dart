@@ -77,4 +77,41 @@ class ContactsService {
       return 0;
     }
   }
+
+  /// Live search against the device address book (not just the local cache).
+  Future<List<Contact>> searchDeviceLive(String query) async {
+    try {
+      final granted = await requestPermission();
+      if (!granted) return [];
+
+      final deviceContacts = await fc.FlutterContacts.getContacts(
+        withProperties: true,
+      );
+      final q = query.toLowerCase().trim();
+      if (q.isEmpty) return [];
+
+      final matches = <Contact>[];
+      for (final c in deviceContacts) {
+        if (c.phones.isEmpty) continue;
+        final name = c.displayName.trim();
+        if (name.isEmpty) continue;
+        if (name.toLowerCase().contains(q) ||
+            q.contains(name.toLowerCase().split(' ').first)) {
+          matches.add(
+            Contact(
+              id: 'device_${c.id}',
+              name: name,
+              phoneNumber: c.phones.first.number.trim(),
+              email: c.emails.isNotEmpty ? c.emails.first.address : null,
+              createdAt: DateTime.now(),
+            ),
+          );
+        }
+      }
+      return matches;
+    } catch (e) {
+      debugPrint('ContactsService: live search failed: $e');
+      return [];
+    }
+  }
 }

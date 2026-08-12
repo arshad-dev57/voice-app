@@ -19,21 +19,19 @@
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.DISABLE_KEYGUARD" />
 
     <!-- ================================================================ -->
-    <!--  Foreground service permissions                                    -->
-    <!--  NOTE: ShakeDetectionService uses the accelerometer sensor only.  -->
-    <!--  It does NOT use the microphone. foregroundServiceType must match  -->
-    <!--  actual usage or Android throws a security exception on API 29+.  -->
+    <!--  Foreground service                                                -->
     <!-- ================================================================ -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <!-- Required for foregroundServiceType="dataSync" on API 34+ -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <uses-permission android:name="android.permission.BODY_SENSORS" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
-    <!-- Additional permissions for Android 13+ media access -->
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
@@ -49,6 +47,8 @@
             android:launchMode="singleTop"
             android:taskAffinity=""
             android:theme="@style/LaunchTheme"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
             android:windowSoftInputMode="adjustResize">
@@ -63,9 +63,6 @@
             </intent-filter>
         </activity>
 
-        <!-- ============================================================ -->
-        <!--  Accessibility Service for automatic SIM selection            -->
-        <!-- ============================================================ -->
         <service
             android:name=".SimSelectionAccessibilityService"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
@@ -78,56 +75,59 @@
                 android:resource="@xml/accessibility_service_config" />
         </service>
 
-        <!-- ============================================================ -->
-        <!--  Foreground Service for Background Shake Detection             -->
-        <!--  Uses accelerometer sensor — no microphone usage.             -->
-        <!--  foregroundServiceType="dataSync" is valid for sensor-reading -->
-        <!--  services that need to run continuously in background.         -->
-        <!-- ============================================================ -->
+        <!-- Shake-to-activate for visually impaired users. specialUse is the
+             correct FGS type for continuous accelerometer monitoring. -->
         <service
             android:name=".ShakeDetectionService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Continuous accelerometer monitoring so visually impaired users can shake the phone to wake a voice assistant that places calls, sends SMS, and sets alarms without looking at the screen." />
+        </service>
+
+        <receiver
+            android:name=".BootReceiver"
+            android:enabled="true"
+            android:exported="true"
+            android:directBootAware="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
     </application>
 
-    <!-- ================================================================ -->
-    <!--  Package Visibility (Android 11+ requires explicit declarations)  -->
-    <!-- ================================================================ -->
     <queries>
-        <!-- Speech recognition -->
         <intent>
             <action android:name="android.speech.RecognitionService" />
         </intent>
-        <!-- Text processing -->
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT" />
             <data android:mimeType="text/plain" />
         </intent>
-        <!-- System Clock for alarms -->
         <intent>
             <action android:name="android.intent.action.SET_ALARM" />
         </intent>
-        <!-- Calendar for events -->
         <intent>
             <action android:name="android.intent.action.INSERT" />
             <data android:mimeType="vnd.android.cursor.dir/event" />
         </intent>
-        <!-- SMS composer fallback -->
         <intent>
             <action android:name="android.intent.action.SENDTO" />
             <data android:scheme="smsto" />
         </intent>
-        <!-- Phone dialer (DIAL = open dialer prefilled, no permission required) -->
         <intent>
             <action android:name="android.intent.action.DIAL" />
             <data android:scheme="tel" />
         </intent>
-        <!-- Phone call (CALL = auto-dial, requires CALL_PHONE permission) -->
         <intent>
             <action android:name="android.intent.action.CALL" />
             <data android:scheme="tel" />

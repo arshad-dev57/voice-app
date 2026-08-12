@@ -72,7 +72,11 @@ class _VoiceOrbState extends State<VoiceOrb> with SingleTickerProviderStateMixin
     final gradient = _getGradient();
     final icon = _getIcon();
 
-    return GestureDetector(
+    return Semantics(
+      button: true,
+      label: 'Voice assistant microphone',
+      hint: 'Double tap to talk',
+      child: GestureDetector(
       onTap: widget.onTap,
       child: AnimatedBuilder(
         animation: _controller,
@@ -136,6 +140,7 @@ class _VoiceOrbState extends State<VoiceOrb> with SingleTickerProviderStateMixin
           );
         },
       ),
+    ),
     );
   }
 }

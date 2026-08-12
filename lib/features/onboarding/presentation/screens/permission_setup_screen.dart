@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:permission_handler/permission_handler.dart';
+import '../../../../core/providers/core_providers.dart';
 import '../../../../theme/app_theme.dart';
 import '../../../../routing/app_router.dart';
+import '../../../auth/presentation/controllers/auth_controller.dart';
 
 class PermissionItem {
   final String title;
@@ -19,14 +22,15 @@ class PermissionItem {
   });
 }
 
-class PermissionSetupScreen extends StatefulWidget {
+class PermissionSetupScreen extends ConsumerStatefulWidget {
   const PermissionSetupScreen({super.key});
 
   @override
-  State<PermissionSetupScreen> createState() => _PermissionSetupScreenState();
+  ConsumerState<PermissionSetupScreen> createState() =>
+      _PermissionSetupScreenState();
 }
 
-class _PermissionSetupScreenState extends State<PermissionSetupScreen> {
+class _PermissionSetupScreenState extends ConsumerState<PermissionSetupScreen> {
   final List<PermissionItem> _permissionItems = [
     PermissionItem(
       title: 'Microphone Access',
@@ -64,6 +68,12 @@ class _PermissionSetupScreenState extends State<PermissionSetupScreen> {
       icon: Icons.calendar_today_rounded,
       permission: Permission.calendarFullAccess,
     ),
+    PermissionItem(
+      title: 'Run in Background',
+      description: 'Keeps shake-to-talk working when the screen is off.',
+      icon: Icons.battery_saver_rounded,
+      permission: Permission.ignoreBatteryOptimizations,
+    ),
   ];
 
   @override
@@ -94,6 +104,17 @@ class _PermissionSetupScreenState extends State<PermissionSetupScreen> {
         await _requestPermission(item);
       }
     }
+  }
+
+  Future<void> _finishSetup() async {
+    final repo = ref.read(localRepositoryProvider);
+    await repo.saveSetting('onboarding_complete', 'true');
+    await ref.read(authControllerProvider.notifier).continueAsGuest();
+    try {
+      await ref.read(phoneServiceProvider).requestIgnoreBatteryOptimizations();
+    } catch (_) {}
+    if (!mounted) return;
+    Navigator.pushReplacementNamed(context, AppRouter.home);
   }
 
   @override
@@ -200,9 +221,7 @@ class _PermissionSetupScreenState extends State<PermissionSetupScreen> {
               children: [
                 Expanded(
                   child: OutlinedButton(
-                    onPressed: () {
-                      Navigator.pushReplacementNamed(context, AppRouter.login);
-                    },
+                    onPressed: () => _finishSetup(),
                     style: OutlinedButton.styleFrom(
                       padding: const EdgeInsets.all(16),
                       side: const BorderSide(color: AppTheme.primary),
@@ -218,9 +237,7 @@ class _PermissionSetupScreenState extends State<PermissionSetupScreen> {
                   child: ElevatedButton(
                     onPressed: () async {
                       await _requestAllPermissions();
-                      if (mounted) {
-                        Navigator.pushReplacementNamed(context, AppRouter.login);
-                      }
+                      await _finishSetup();
                     },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppTheme.primary,

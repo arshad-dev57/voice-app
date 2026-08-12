@@ -31,6 +31,7 @@ class AppRouter {
   static const String login = '/login';
   static const String home = '/home';
   static const String assistant = '/assistant';
+  static const String dashboard = '/dashboard';
   static const String activityHistory = '/activity-history';
   static const String callManagement = '/call-management';
   static const String contacts = '/contacts';
@@ -61,9 +62,11 @@ class AppRouter {
       case login:
         return _buildRoute(const LoginScreen());
       case home:
-        return _buildRoute(const HomeDashboardScreen());
+        return _buildRoute(const VoiceAssistantScreen());
       case assistant:
         return _buildRoute(const VoiceAssistantScreen());
+      case dashboard:
+        return _buildRoute(const HomeDashboardScreen());
       case activityHistory:
         return _buildRoute(const ActivityHistoryScreen());
       case callManagement:
